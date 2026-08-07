@@ -439,7 +439,7 @@ end, true, { help = TranslateCap("command_clearall") })
 
 ESX.RegisterCommand("refreshjobs", "admin", function()
     ESX.RefreshJobs()
-end, true, { help = TranslateCap("command_clearall") })
+end, true, { help = TranslateCap("command_refreshjobs") })
 
 if not Config.CustomInventory then
     ESX.RegisterCommand("refreshitems", "admin", function(xPlayer)

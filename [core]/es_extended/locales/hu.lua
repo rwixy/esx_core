@@ -116,6 +116,7 @@ return {
     ["command_giveammo_ammo"] = "Lőszer mennyiség",
     ["tpm_nowaypoint"] = "Nincs kijelölve pozíció!",
     ["tpm_success"] = "Sikeres teleportálás",
+    ["command_refreshjobs"] = "Sikeres munkák frissítése",
 
     ["noclip_message"] = "Noclip %s",
     ["enabled"] = "~g~engedélyezve~s~",

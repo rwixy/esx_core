@@ -119,6 +119,7 @@ return {
     ["command_giveammo_ammo"] = "כמות תחמושת",
     ["tpm_nowaypoint"] = "אין נקודת דרך מוגדרת",
     ["tpm_success"] = "הועברת בהצלחה",
+    ["command_refreshjobs"] = "העבודות התעדכנו בהצלחה",
 
     ["noclip_message"] = "מצב Noclip %s",
     ["enabled"] = "~g~מאופשר~s~",

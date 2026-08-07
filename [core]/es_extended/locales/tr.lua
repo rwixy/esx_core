@@ -120,6 +120,7 @@ return {
     ["command_giveammo_ammo"] = "Mermi Miktarı",
     ["tpm_nowaypoint"] = "Hiçbir Yol İşareti Ayarlanmadı.",
     ["tpm_success"] = "Başarıyla Teleport Edildi",
+    ["command_refreshjobs"] = "Başarıyla Meslekler Yenilendi",
 
     ["noclip_message"] = "Noclip %s Yapıldı",
     ["enabled"] = "~g~Aktif Edildi~s~",

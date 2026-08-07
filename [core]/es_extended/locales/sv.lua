@@ -120,6 +120,7 @@ return {
     ["command_giveammo_ammo"] = "Antal ammo",
     ["tpm_nowaypoint"] = "Ingen markör sutten.",
     ["tpm_success"] = "Du har teleporterat",
+    ["command_refreshjobs"] = "Jobben har uppdaterats",
 
     ["noclip_message"] = "Noclip har %s",
     ["enabled"] = "~g~aktiverats~s~",

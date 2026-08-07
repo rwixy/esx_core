@@ -122,6 +122,7 @@ return {
     ["command_setdim"] = "Establecer la dimensión de un jugador",
     ["tpm_nowaypoint"] = "No hay punto de ruta establecido.",
     ["tpm_success"] = "Teletransportado con éxito",
+    ["command_refreshjobs"] = "Trabajos actualizados con éxito",
 
     ["noclip_message"] = "Noclip ha sido %s",
     ["enabled"] = "~g~activado~s~",

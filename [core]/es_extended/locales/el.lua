@@ -120,6 +120,7 @@ return {
     ["command_giveammo_ammo"] = "Ποσότητα πυρομαχικών",
     ["tpm_nowaypoint"] = "Δεν έχει οριστεί σημείο προορισμού.",
     ["tpm_success"] = "Επιτυχής τηλεμεταφορά",
+    ["command_refreshjobs"] = "Επιτυχής ανανέωση εργασιών",
 
     ["noclip_message"] = "Το Noclip έχει %s",
     ["enabled"] = "~g~ενεργοποιήθηκε~s~",

@@ -122,6 +122,7 @@ return {
     ["command_setdim"] = "Définir la dimension d'un joueur",
     ["tpm_nowaypoint"] = "Aucun point n'est défini sur la carte",
     ["tpm_success"] = "Vous avez bien été téléporté",
+    ["command_refreshjobs"] = "Les métiers ont été actualisés avec succès",
 
     ["noclip_message"] = "Le mode noclip a été %s",
     ["enabled"] = "~g~activé~s~",

@@ -112,6 +112,7 @@ return {
     ["command_giveammo_ammo"] = "Munitie Hoeveelheid",
     ["tpm_nowaypoint"] = "Geen navigatie ingesteld.",
     ["tpm_success"] = "Successvol geteleporteerd",
+    ["command_refreshjobs"] = "Succesvol werkzaamheden vernieuwd",
 
     ["noclip_message"] = "Noclip is %s",
     ["enabled"] = "~g~aangezet~s~",

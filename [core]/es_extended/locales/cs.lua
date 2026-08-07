@@ -114,6 +114,7 @@ return {
     ["command_giveammo_noweapon_found"] = "%s nemá tuto zbraň",
     ["command_giveammo_weapon"] = "Název zbraně",
     ["command_giveammo_ammo"] = "Počet nábojů",
+    ["command_refreshjobs"] = "Úspěšně obnovené úlohy",
 
     -- Locale settings
     ["locale_digit_grouping_symbol"] = ",",

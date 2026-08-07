@@ -120,6 +120,7 @@ return {
     ["command_giveammo_ammo"] = "Quantità munizioni",
     ["tpm_nowaypoint"] = "Nessuna meta impostata",
     ["tpm_success"] = "Teletrasportato con successo",
+    ["command_refreshjobs"] = "Uffici aggiornati con successo",
 
     ["noclip_message"] = "Noclip %s",
     ["enabled"] = "~g~abilitato~s~",

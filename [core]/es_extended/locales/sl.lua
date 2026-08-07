@@ -116,6 +116,7 @@ return {
     ["command_giveammo_ammo"] = "Kolicina streliva",
     ["tpm_nowaypoint"] = "Ni nastavljene poti!.",
     ["tpm_success"] = "Uspesno teleportiran",
+    ["command_refreshjobs"] = "Sukcesywnie odświeżone prace",
 
     ["noclip_message"] = "Noclip je bil %s",
     ["enabled"] = "~g~Vkljucen~s~",

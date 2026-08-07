@@ -116,6 +116,7 @@ return {
     ["command_giveammo_ammo"] = "Količina municije",
     ["tpm_nowaypoint"] = "Morate označiti lokaciju.",
     ["tpm_success"] = "Teleportovani ste na lokaciju",
+    ["command_refreshjobs"] = "Sukcesywnie odświeżone prace",
 
     ["noclip_message"] = "Noclip %s",
     ["enabled"] = "~g~upaljen~s~",

@@ -122,6 +122,7 @@ return {
     ["command_setdim"] = "切换玩家维度",
     ["tpm_nowaypoint"] = "传送失败: 未设置路径点",
     ["tpm_success"] = "路径点传送完成",
+    ["command_refreshjobs"] = "成功刷新工作",
 
     ["noclip_message"] = "飞行模式 %s",
     ["enabled"] = "~g~已激活~s~",

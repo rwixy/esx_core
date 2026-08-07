@@ -120,6 +120,7 @@ return {
     ["command_giveammo_ammo"] = "Jumlah Amunisi",
     ["tpm_nowaypoint"] = "Titik Lokasi Tidak Diatur.",
     ["tpm_success"] = "Berhasil Teleportasi",
+    ["command_refreshjobs"] = "Berhasil Memperbarui Pekerjaan",
 
     ["noclip_message"] = "Noclip telah %s",
     ["enabled"] = "~g~diaktifkan~s~",

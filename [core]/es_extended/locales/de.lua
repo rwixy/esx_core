@@ -122,6 +122,7 @@ return {
     ["command_setdim"] = "Setzt Spieler Dimension!",
     ["tpm_nowaypoint"] = "Kein Wegpunkt gesetzt!",
     ["tpm_success"] = "Erfolgreich teleportiert.",
+    ["command_refreshjobs"] = "Erfolgreich aktualisierte Jobs",
 
     ["noclip_message"] = "Noclip wurde %s",
     ["enabled"] = "~g~Aktiviert~s~",

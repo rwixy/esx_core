@@ -109,6 +109,7 @@ return {
     ["command_giveammo_noweapon_found"] = "%s ei ole sitä asetta",
     ["command_giveammo_weapon"] = "Aseen nimi",
     ["command_giveammo_ammo"] = "Ammusten määrä",
+    ["command_refreshjobs"] = "Uudet työt päivitetty",
 
     -- Locale settings
     ["locale_digit_grouping_symbol"] = "",

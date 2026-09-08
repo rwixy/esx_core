@@ -1024,7 +1024,7 @@ Config.Weapons = {
             { name = "flashlight", label = TranslateCap("component_flashlight"), hash = `COMPONENT_AT_AR_FLSH` },
             { name = "scope", label = TranslateCap("component_scope"), hash = `COMPONENT_AT_SCOPE_SMALL` },
         },
-        ammo = { label = TranslateCap("ammo_grenadelauncher"), hash = `AMMO_GRENADELAUNCHER` },
+        ammo = { label = TranslateCap("ammo_grenadelauncher"), hash = `AMMO_GRENADELAUNCHER_SMOKE` },
     },
     {
         name = "WEAPON_EMPLAUNCHER",
@@ -1033,7 +1033,7 @@ Config.Weapons = {
         components = {
             { name = "clip_default", label = TranslateCap("clip_default"), hash = `COMPONENT_EMPLAUNCHER_CLIP_01` },
         },
-        ammo = { label = TranslateCap("ammo_grenadelauncher"), hash = `AMMO_GRENADELAUNCHER` },
+        ammo = { label = TranslateCap("ammo_grenadelauncher"), hash = `AMMO_EMPLAUNCHER` },
     },
     { name = "WEAPON_HOMINGLAUNCHER", label = TranslateCap("weapon_hominglauncher"), tints = Config.DefaultWeaponTints, components = {}, ammo = { label = TranslateCap("ammo_rockets"), hash = `AMMO_HOMINGLAUNCHER` } },
     { name = "WEAPON_MINIGUN", label = TranslateCap("weapon_minigun"), tints = Config.DefaultWeaponTints, components = {}, ammo = { label = TranslateCap("ammo_rounds"), hash = `AMMO_MINIGUN` } },

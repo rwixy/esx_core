@@ -3,6 +3,7 @@ local Util <const> = xLib.require "@esx_whitelist.client.module.whitelist.util"
 ---@class WhitelistUIController
 ---@field isVisible boolean
 ---@field isGraceActive boolean
+---@field graceThreadRunning boolean
 ---@field graceEndTime number
 ---@field translations table<string, string>
 local WhitelistUI = {}
@@ -14,6 +15,7 @@ function WhitelistUI.new()
     local self = setmetatable({}, WhitelistUI)
     self.isVisible = false
     self.isGraceActive = false
+    self.graceThreadRunning = false
     self.graceEndTime = 0
     self.translations = Util.LoadLocale(Config.Locale)
     return self
@@ -53,12 +55,17 @@ function WhitelistUI:startControlDisabler()
     end)
 end
 
----Starts temporary scoped grace period countdown thread
+---Starts temporary scoped grace period countdown thread.
 ---@param seconds number
 function WhitelistUI:startGracePeriod(seconds)
     self.isGraceActive = true
     self.graceEndTime = GetGameTimer() + (seconds * 1000)
 
+    if self.graceThreadRunning then
+        return
+    end
+
+    self.graceThreadRunning = true
     CreateThread(function()
         while self.isGraceActive and (GetGameTimer() < self.graceEndTime) do
             Wait(1000)
@@ -72,6 +79,7 @@ function WhitelistUI:startGracePeriod(seconds)
             end
         end
         self.isGraceActive = false
+        self.graceThreadRunning = false
     end)
 end
 

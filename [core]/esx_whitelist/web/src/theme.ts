@@ -1,5 +1,9 @@
 import type { ThemeConvars } from './types'
 
+function sanitizeCssUrl(url: string): string {
+  return url.replace(/["'\\\n\r]/g, '')
+}
+
 export function applyThemeConvars(theme?: ThemeConvars): void {
   const root = document.documentElement
 
@@ -25,6 +29,6 @@ export function applyThemeConvars(theme?: ThemeConvars): void {
   }
 
   if (theme.logoUrl) {
-    root.style.setProperty('--logo-url', `url("${theme.logoUrl}")`)
+    root.style.setProperty('--logo-url', `url("${sanitizeCssUrl(theme.logoUrl)}")`)
   }
 }

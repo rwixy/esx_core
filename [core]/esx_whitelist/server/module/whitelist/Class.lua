@@ -99,7 +99,7 @@ function WhitelistRule:evaluate(onlineCount, adminCount)
         end
 
         if inRange then
-            return true, true
+            return true, self.action == Enum.RuleAction.ENABLE
         end
     end
 

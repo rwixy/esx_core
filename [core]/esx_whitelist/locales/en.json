@@ -97,5 +97,6 @@
     "discord_token_status": "Bot Token Status",
     "discord_token_configured": "Valid Token Configured",
     "discord_token_missing": "No Valid Token",
-    "discord_token_warning": "Discord verification requires a valid Bot Token configured in server/cfg_discord.lua"
+    "discord_token_warning": "Discord verification requires a valid Bot Token configured in server/cfg_discord.lua",
+    "discord_check_failed": "Discord role check failed (API unreachable)"
 }

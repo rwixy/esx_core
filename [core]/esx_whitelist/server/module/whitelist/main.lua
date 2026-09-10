@@ -940,7 +940,7 @@ end
 ---Registers in-game and console administrative commands
 local function registerCommands()
     if Config.InGameCommands then
-        ESX.RegisterCommand("wl_add", "admin", function(xPlayer, args)
+        ESX.RegisterCommand("wl_add", Config.AdminGroups, function(xPlayer, args)
             if not xPlayer then
                 print("[esx_whitelist] This command must be used in-game")
                 return
@@ -1005,7 +1005,7 @@ local function registerCommands()
             }
         })
 
-        ESX.RegisterCommand("wl_check", "admin", function(xPlayer, args)
+        ESX.RegisterCommand("wl_check", Config.AdminGroups, function(xPlayer, args)
             if not xPlayer then
                 print("[esx_whitelist] This command must be used in-game")
                 return
@@ -1046,7 +1046,7 @@ local function registerCommands()
             }
         })
 
-        ESX.RegisterCommand("wl_sync", "admin", function(xPlayer)
+        ESX.RegisterCommand("wl_sync", Config.AdminGroups, function(xPlayer)
             refreshWhitelistCache(function()
                 if xPlayer then
                     xPlayer.showNotification("~g~Whitelist cache synchronized with database")

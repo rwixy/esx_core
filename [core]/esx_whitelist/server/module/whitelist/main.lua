@@ -890,8 +890,13 @@ local function registerServerCallbacks()
 
         local xPlayer = ESX.GetPlayerFromId(source)
         local adminName = xPlayer and xPlayer.getName() or "Admin"
-        local targetStatus = tonumber(data.status) or 0
+        local targetStatus = tonumber(data.status)
         local targetId = tonumber(data.id)
+
+        if targetStatus ~= 0 and targetStatus ~= 1 then
+            cb(false)
+            return
+        end
 
         if not targetId then
             cb(false)

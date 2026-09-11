@@ -640,43 +640,151 @@ local function registerServerCallbacks()
         })
     end)
 
-    ESX.RegisterServerCallback("esx_whitelist:getWhitelistEntries", function(source, cb)
+    ESX.RegisterServerCallback("esx_whitelist:getWhitelistEntries", function(source, cb, request)
         if not source or source == 0 or not isPlayerAdmin(source) then
-            cb({})
+            cb({
+                entries = {},
+                page = 1,
+                limit = 50,
+                total = 0,
+                totalPages = 0
+            })
             return
         end
 
-        MySQL.query("SELECT id, player_name, CAST(whitelisted AS UNSIGNED) as whitelisted FROM whitelist ORDER BY whitelisted DESC, id ASC", {}, function(rows)
-            if not rows then
-                cb({})
-                return
+        request = type(request) == "table" and request or {}
+
+        local page = math.max(1, math.floor(tonumber(request.page) or 1))
+        local limit = math.min(100, math.max(10, math.floor(tonumber(request.limit) or 50)))
+        local search = type(request.search) == "string" and request.search:sub(1, 100) or ""
+        local status = tonumber(request.status)
+
+        local offset = (page - 1) * limit
+
+        local where = {}
+        local params = {}
+
+        if search ~= "" then
+            where[#where + 1] = [[
+                (
+                    w.player_name LIKE ?
+                    OR EXISTS (
+                        SELECT 1
+                        FROM whitelist_identifiers ws
+                        WHERE ws.whitelist_id = w.id
+                        AND ws.identifier LIKE ?
+                    )
+                )
+            ]]
+
+            local pattern = "%" .. search .. "%"
+            params[#params + 1] = pattern
+            params[#params + 1] = pattern
+        end
+
+        if status == 0 or status == 1 then
+            where[#where + 1] = "w.whitelisted = ?"
+            params[#params + 1] = status
+        end
+
+        local whereSql = #where > 0
+            and ("WHERE " .. table.concat(where, " AND "))
+            or ""
+
+        local countQuery = ("SELECT COUNT(*) AS total FROM whitelist w %s"):format(whereSql)
+
+        MySQL.query(countQuery, params, function(countRows)
+            local total = countRows and countRows[1] and tonumber(countRows[1].total) or 0
+            local totalPages = math.max(1, math.ceil(total / limit))
+
+            if page > totalPages then
+                page = totalPages
+                offset = (page - 1) * limit
             end
 
-            MySQL.query("SELECT whitelist_id, identifier FROM whitelist_identifiers", {}, function(idRows)
-                local idMap = {}
-                if idRows then
-                    for i = 1, #idRows do
+            local queryParams = {}
+
+            for i = 1, #params do
+                queryParams[i] = params[i]
+            end
+
+            queryParams[#queryParams + 1] = limit
+            queryParams[#queryParams + 1] = offset
+
+            local query = ([[
+                SELECT
+                    w.id,
+                    w.player_name,
+                    CAST(w.whitelisted AS UNSIGNED) AS whitelisted
+                FROM whitelist w
+                %s
+                ORDER BY w.whitelisted DESC, w.id ASC
+                LIMIT ? OFFSET ?
+            ]]):format(whereSql)
+
+            MySQL.query(query, queryParams, function(rows)
+                if not rows or #rows == 0 then
+                    cb({
+                        entries = {},
+                        page = page,
+                        limit = limit,
+                        total = total,
+                        totalPages = totalPages
+                    })
+                    return
+                end
+
+                local ids = {}
+                local placeholders = {}
+
+                for i = 1, #rows do
+                    ids[i] = rows[i].id
+                    placeholders[i] = "?"
+                end
+
+                local identifierQuery = ([[
+                    SELECT whitelist_id, identifier
+                    FROM whitelist_identifiers
+                    WHERE whitelist_id IN (%s)
+                    ORDER BY whitelist_id ASC, id ASC
+                ]]):format(table.concat(placeholders, ","))
+
+                MySQL.query(identifierQuery, ids, function(idRows)
+                    local idMap = {}
+
+                    for i = 1, #(idRows or {}) do
                         local row = idRows[i]
                         local list = idMap[row.whitelist_id]
+
                         if not list then
                             list = {}
                             idMap[row.whitelist_id] = list
                         end
+
                         list[#list + 1] = row.identifier
                     end
-                end
 
-                local entries = {}
-                for i = 1, #rows do
-                    entries[#entries + 1] = {
-                        id = rows[i].id,
-                        identifiers = idMap[rows[i].id] or {},
-                        playerName = rows[i].player_name or "Unknown",
-                        whitelisted = rows[i].whitelisted
-                    }
-                end
+                    local entries = {}
 
-                cb(entries)
+                    for i = 1, #rows do
+                        local row = rows[i]
+
+                        entries[i] = {
+                            id = row.id,
+                            identifiers = idMap[row.id] or {},
+                            playerName = row.player_name or "Unknown",
+                            whitelisted = tonumber(row.whitelisted) or 0
+                        }
+                    end
+
+                    cb({
+                        entries = entries,
+                        page = page,
+                        limit = limit,
+                        total = total,
+                        totalPages = totalPages
+                    })
+                end)
             end)
         end)
     end)

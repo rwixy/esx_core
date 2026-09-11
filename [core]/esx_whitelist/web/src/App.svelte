@@ -1,16 +1,18 @@
-<script lang="ts">
-  import { onMount } from 'svelte'
-  import type { WhitelistConfig, WhitelistEntry, WhitelistRule } from './types'
-  import { applyThemeConvars } from './theme'
-  import { sounds } from './audio'
-  import logo from '/esx-logo.png'
-
+<script module lang="ts">
   declare global {
     interface Window {
       GetParentResourceName?: () => string
       invokeNative?: unknown
     }
   }
+</script>
+
+<script lang="ts">
+  import { onMount } from 'svelte'
+  import type { WhitelistConfig, WhitelistEntry, WhitelistRule } from './types'
+  import { applyThemeConvars } from './theme'
+  import { sounds } from './audio'
+  import logo from '/esx-logo.png'
 
   // Detect if running inside browser or FiveM CEF
   const isBrowser = typeof window !== 'undefined' && typeof window.invokeNative !== 'function'

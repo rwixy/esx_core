@@ -83,9 +83,26 @@ local function registerNuiCallbacks()
     end)
 
     RegisterNUICallback("getWhitelistEntries", function(data, cb)
-        ESX.TriggerServerCallback("esx_whitelist:getWhitelistEntries", function(entries)
-            cb(entries or {})
-        end)
+    data = type(data) == "table" and data or {}
+
+    ESX.TriggerServerCallback(
+            "esx_whitelist:getWhitelistEntries",
+            function(result)
+                cb(result or {
+                    entries = {},
+                    page = 1,
+                    limit = 50,
+                    total = 0,
+                    totalPages = 0
+                })
+            end,
+            {
+                page = tonumber(data.page) or 1,
+                limit = tonumber(data.limit) or 50,
+                search = type(data.search) == "string" and data.search or "",
+                status = tonumber(data.status)
+            }
+        )
     end)
 
     RegisterNUICallback("managePlayer", function(data, cb)

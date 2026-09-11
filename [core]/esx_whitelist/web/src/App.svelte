@@ -72,6 +72,12 @@
   })
 
   let entries = $state<WhitelistEntry[]>(isBrowser ? demoEntries : [])
+  let currentPage = $state(1)
+  let pageSize = $state(50)
+  let totalEntries = $state(0)
+  let totalPages = $state(0)
+  let isLoadingEntries = $state(false)
+  let searchTimer: ReturnType<typeof setTimeout> | null = null
   let newIdentifier = $state('')
   let newAction = $state<'add' | 'remove'>('add')
   let isSaving = $state(false)
@@ -99,7 +105,38 @@
   async function postNui<T = unknown>(action: string, data: unknown = {}): Promise<T | null> {
     if (isBrowser) {
       if (action === 'getWhitelistEntries') {
-        return entries as unknown as T
+        const payload = data as {
+            page?: number
+            limit?: number
+            search?: string
+        }
+      
+        const page = Math.max(1, payload.page ?? 1)
+        const limit = Math.max(1, payload.limit ?? 50)
+        const search = (payload.search ?? '').trim().toLowerCase()
+      
+        const filtered = demoEntries.filter((entry) => {
+            if (!search) return true
+        
+            return (
+                entry.playerName.toLowerCase().includes(search) ||
+                entry.identifiers.some((id) =>
+                    id.toLowerCase().includes(search)
+                )
+            )
+        })
+      
+        const total = filtered.length
+        const totalPages = Math.max(1, Math.ceil(total / limit))
+        const start = (page - 1) * limit
+      
+        return {
+            entries: filtered.slice(start, start + limit),
+            page,
+            limit,
+            total,
+            totalPages
+        } as unknown as T
       }
       if (action === 'updateConfig') {
         return true as unknown as T
@@ -170,10 +207,31 @@
     }
   }
 
-  async function loadEntries() {
-    const list = await postNui<WhitelistEntry[]>('getWhitelistEntries')
-    if (list) {
-      entries = list
+  async function loadEntries(page = currentPage, search = searchQuery) {
+    if (isLoadingEntries) return
+    isLoadingEntries = true
+
+    try {
+        const result = await postNui<{
+            entries: WhitelistEntry[]
+            page: number
+            limit: number
+            total: number
+            totalPages: number
+        }>('getWhitelistEntries', {
+            page,
+            limit: pageSize,
+            search: search.trim()
+        })
+
+        if (result) {
+            entries = result.entries ?? []
+            currentPage = result.page ?? page
+            totalEntries = result.total ?? 0
+            totalPages = result.totalPages ?? 0
+        }
+    } finally {
+        isLoadingEntries = false
     }
   }
 
@@ -207,8 +265,12 @@
     })
 
     if (ok) {
-      entry.whitelisted = newStatus
-      showToast(`Status updated to ${newStatus === 1 ? 'Whitelisted' : 'Not Whitelisted'}`, 'success')
+      entries = entries.map((item) =>
+        item.id === entry.id
+            ? { ...item, whitelisted: newStatus }
+            : item
+      )
+      showToast(`Status updated to ${newStatus === 1 ? 'Whitelisted' : 'Not Whitelisted'}`,'success')
     } else {
       showToast('Failed to update status', 'danger')
     }
@@ -245,15 +307,16 @@
     sounds.playToggle(config.rules[index].enabled)
   }
 
-  let filteredEntries = $derived(
-    entries.filter((entry) => {
-      const q = searchQuery.toLowerCase().trim()
-      if (!q) return true
-      const matchesName = entry.playerName.toLowerCase().includes(q)
-      const matchesId = entry.identifiers.some((id) => id.toLowerCase().includes(q))
-      return matchesName || matchesId
-    })
-  )
+  function handleSearchInput() {
+    if (searchTimer) {
+        clearTimeout(searchTimer)
+    }
+
+    searchTimer = setTimeout(() => {
+        currentPage = 1
+        loadEntries(1, searchQuery)
+    }, 250)
+  }
 
   onMount(() => {
     if (isBrowser) {
@@ -346,10 +409,10 @@
       <button
         class="tab-btn"
         class:active={activeTab === 'list'}
-        onclick={() => { activeTab = 'list'; loadEntries(); sounds.playClick() }}
+        onclick={() => { activeTab = 'list'; currentPage = 1; loadEntries(1); sounds.playClick() }}
       >
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
-        Database ({entries.length})
+        Database ({totalEntries})
       </button>
     </nav>
 
@@ -655,10 +718,10 @@
                 type="text"
                 placeholder="Search by player name or identifier..."
                 class="search-input"
-                bind:value={searchQuery}
+                bind:value={searchQuery} oninput={handleSearchInput}
               />
             </div>
-            <button class="btn btn-secondary" onclick={loadEntries}>Refresh List</button>
+            <button class="btn btn-secondary" onclick={() => loadEntries(currentPage, searchQuery)}>Refresh List</button>
           </div>
 
           <div class="table-wrap">
@@ -673,7 +736,7 @@
                 </tr>
               </thead>
               <tbody>
-                {#each filteredEntries as entry}
+                {#each entries as entry}
                   <tr>
                     <td>#{entry.id}</td>
                     <td class="player-col">
@@ -713,7 +776,7 @@
                   </tr>
                 {/each}
 
-                {#if filteredEntries.length === 0}
+                {#if entries.length === 0}
                   <tr>
                     <td colspan="5" style="text-align: center; padding: 32px; color: var(--color-light);">
                       No matching whitelist records found.
@@ -722,6 +785,33 @@
                 {/if}
               </tbody>
             </table>
+          </div>
+
+          <div class="pagination">
+            <button
+                class="btn btn-secondary pagination-btn"
+                disabled={currentPage <= 1 || isLoadingEntries}
+                onclick={() => loadEntries(currentPage - 1)}
+                aria-label="Previous page"
+                title="Previous page"
+            >
+                ‹
+            </button>
+          
+            <span>
+                Page {currentPage} of {Math.max(totalPages, 1)}
+                · {totalEntries} records
+            </span>
+          
+            <button
+                class="btn btn-secondary pagination-btn"
+                disabled={currentPage >= totalPages || isLoadingEntries}
+                onclick={() => loadEntries(currentPage + 1)}
+                aria-label="Next page"
+                title="Next page"
+            >
+                ›
+            </button>
           </div>
         </div>
       {/if}
@@ -734,27 +824,9 @@
       </div>
     {/if}
   </main>
-{:else if isBrowser}
-  <button class="btn btn-brand browser-reopen-btn" onclick={() => (visible = true)}>
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-    </svg>
-    Open Whitelist Control Panel (Browser Preview)
-  </button>
 {/if}
 
 <style>
-  .browser-reopen-btn {
-    position: fixed;
-    bottom: 30px;
-    right: 30px;
-    padding: 12px 20px;
-    font-size: 15px;
-    font-weight: 600;
-    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.6), 0 0 15px rgba(251, 155, 4, 0.4);
-    z-index: 9999;
-  }
-
   .panel-container {
     width: 960px;
     max-width: 95vw;
@@ -1174,4 +1246,25 @@
   .toast-success { background: var(--color-success); color: white; }
   .toast-danger { background: var(--color-danger); color: white; }
   .toast-info { background: var(--color-info); color: white; }
+
+ .pagination {
+    margin-top: auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 24px;
+    width: 100%;
+    padding-top: 16px;
+  }
+
+  .pagination-btn {
+      width: 38px;
+      height: 38px;
+      padding: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 24px;
+      line-height: 1;
+  }
 </style>

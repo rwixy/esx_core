@@ -83,9 +83,9 @@ local function registerNuiCallbacks()
     end)
 
     RegisterNUICallback("getWhitelistEntries", function(data, cb)
-    data = type(data) == "table" and data or {}
+        data = type(data) == "table" and data or {}
 
-    ESX.TriggerServerCallback(
+        ESX.TriggerServerCallback(
             "esx_whitelist:getWhitelistEntries",
             function(result)
                 cb(result or {

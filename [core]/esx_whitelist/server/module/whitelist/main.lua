@@ -10,6 +10,12 @@ local Whitelist = {}
 local playerIdentifierCache = {}
 
 ---@type table<string, number>
+local onlineIdentifierSources = {}
+
+---@type table<number, boolean>
+local onlineSources = {}
+
+---@type table<string, number>
 local whitelistCache = {}
 
 ---@type table<number, { endTime: number, playerName: string }>
@@ -239,6 +245,10 @@ local function cachePlayerIdentifiers(playerId)
     local identifiers = Util.GetPlayerIdentifiersFiltered(playerId)
     playerIdentifierCache[playerId] = identifiers
 
+    for i = 1, #identifiers do
+        onlineIdentifierSources[identifiers[i]] = playerId
+    end
+
     return identifiers
 end
 
@@ -248,6 +258,16 @@ local function getCachedPlayerIdentifiers(playerId)
 end
 
 local function clearPlayerIdentifierCache(playerId)
+    local identifiers = playerIdentifierCache[playerId]
+
+    if identifiers then
+        for i = 1, #identifiers do
+            if onlineIdentifierSources[identifiers[i]] == playerId then
+                onlineIdentifierSources[identifiers[i]] = nil
+            end
+        end
+    end
+
     playerIdentifierCache[playerId] = nil
 end
 
@@ -413,36 +433,57 @@ end
 ---@param callback fun(identifiers: string[], playerName: string?, isOnline: boolean)
 local function getAllPlayerIdentifiers(singleIdentifier, callback)
     local idType, idValue = Util.NormalizeIdentifier(singleIdentifier)
+
     if not idType or not idValue then
         callback({}, nil, false)
         return
     end
 
     local fullIdentifier = idType .. ":" .. idValue
-    local players = ESX.GetExtendedPlayers()
 
-    for i = 1, #players do
-        local targetPlayer = players[i]
-        if targetPlayer and targetPlayer.source then
-            local identifiers = getCachedPlayerIdentifiers(targetPlayer.source)
-            for j = 1, #identifiers do
-                if identifiers[j] == fullIdentifier then
-                    local name = GetPlayerName(targetPlayer.source) or targetPlayer.getName()
-                    callback(identifiers, name, true)
-                    return
-                end
-            end
-        end
+    local source = onlineIdentifierSources[fullIdentifier]
+
+    if source then
+        local identifiers = getCachedPlayerIdentifiers(source)
+        local xPlayer = ESX.GetPlayerFromId(source)
+
+        local playerName =
+            GetPlayerName(source)
+            or (xPlayer and xPlayer.getName())
+            or "Unknown"
+
+        callback(identifiers, playerName, true)
+        return
     end
 
-    local subQuery = "SELECT wi.identifier, w.player_name FROM whitelist_identifiers wi JOIN whitelist w ON w.id = wi.whitelist_id WHERE wi.whitelist_id = (SELECT whitelist_id FROM whitelist_identifiers WHERE identifier = ? LIMIT 1)"
-    MySQL.query(subQuery, { fullIdentifier }, function(results)
+    local query = [[
+        SELECT
+            wi.identifier,
+            w.player_name
+        FROM whitelist_identifiers wi
+        JOIN whitelist w
+            ON w.id = wi.whitelist_id
+        WHERE wi.whitelist_id = (
+            SELECT whitelist_id
+            FROM whitelist_identifiers
+            WHERE identifier = ?
+            LIMIT 1
+        )
+    ]]
+
+    MySQL.query(query, { fullIdentifier }, function(results)
         if results and #results > 0 then
-            local allIdentifiers = {}
+            local identifiers = {}
+
             for i = 1, #results do
-                allIdentifiers[#allIdentifiers + 1] = results[i].identifier
+                identifiers[#identifiers + 1] = results[i].identifier
             end
-            callback(allIdentifiers, results[1].player_name, false)
+
+            callback(
+                identifiers,
+                results[1].player_name,
+                false
+            )
         else
             callback({ fullIdentifier }, nil, false)
         end
@@ -452,22 +493,23 @@ end
 ---Notifies an online player if they were whitelisted while in grace period
 ---@param fullIdentifier string
 local function notifyOnlinePlayerWhitelisted(fullIdentifier)
-    local players = ESX.GetExtendedPlayers()
-    for i = 1, #players do
-        local target = players[i]
-        if target and target.source then
-            local identifiers = Util.GetPlayerIdentifiersFiltered(target.source)
-            for j = 1, #identifiers do
-                if identifiers[j] == fullIdentifier then
-                    target.showNotification("~g~" .. Util.Translate(translations, "added_to_whitelist"))
-                    if gracePeriodPlayers[target.source] then
-                        gracePeriodPlayers[target.source] = nil
-                        TriggerClientEvent("esx_whitelist:cancelGracePeriod", target.source)
-                    end
-                    return
-                end
-            end
-        end
+    local source = onlineIdentifierSources[fullIdentifier]
+
+    if not source then
+        return
+    end
+
+    local target = ESX.GetPlayerFromId(source)
+
+    if not target then
+        return
+    end
+
+    target.showNotification("~g~" .. Util.Translate(translations,"added_to_whitelist"))
+
+    if gracePeriodPlayers[source] then
+        gracePeriodPlayers[source] = nil
+        TriggerClientEvent("esx_whitelist:cancelGracePeriod",source)
     end
 end
 
@@ -480,7 +522,7 @@ local function initializeDatabase(callback)
             `whitelisted` TINYINT(1) NOT NULL DEFAULT 0,
             `added_by` VARCHAR(255) COLLATE utf8mb4_unicode_ci,
             `added_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            INDEX `idx_whitelisted` (`whitelisted`)
+            INDEX `idx_whitelisted` (`whitelisted`, `id`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     ]], {}, function()
         MySQL.query([[
@@ -494,6 +536,7 @@ local function initializeDatabase(callback)
                     ON DELETE CASCADE,
                 UNIQUE KEY `unique_identifier` (`type`, `identifier`),
                 INDEX `idx_identifier` (`identifier`)
+                INDEX `idx_whitelist_id` (`whitelist_id`)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
         ]], {}, function()
             if callback then
@@ -503,8 +546,7 @@ local function initializeDatabase(callback)
     end)
 end
 
----Inserts a player record idempotently. Re-points existing identifiers to the new
----row on duplicate-connect races and cleans up orphan whitelist rows afterwards.
+---Inserts a player record and associates its identifiers atomically.
 ---@param realPlayerName string
 ---@param identifiers string[]
 ---@param whitelisted number
@@ -1069,7 +1111,12 @@ local function registerServerCallbacks()
             return
         end
 
-        MySQL.update("UPDATE whitelist SET whitelisted = ? WHERE id = ?", { targetStatus, targetId }, function()
+        MySQL.update("UPDATE whitelist SET whitelisted = ? WHERE id = ?", { targetStatus, targetId }, 
+            function(affectedRows)
+                if not affectedRows or affectedRows < 1 then
+                    cb(false)
+                    return
+                end
             MySQL.query("SELECT identifier FROM whitelist_identifiers WHERE whitelist_id = ?", { targetId }, function(res)
                 if res then
                     for i = 1, #res do
@@ -1188,9 +1235,8 @@ local function registerCommands()
             end
 
             local targetId = tonumber(args.id)
-            local targetPlayer = ESX.GetPlayerFromId(targetId)
-            if not targetPlayer then
-                xPlayer.showNotification("~r~Player not found")
+            if not targetId or targetId <= 0 then
+                xPlayer.showNotification("~r~Invalid player ID")
                 return
             end
 
@@ -1203,7 +1249,8 @@ local function registerCommands()
                 end
             end
 
-            local name = targetPlayer.getName()
+            local targetPlayer = ESX.GetPlayerFromId(targetId)
+            local name = targetPlayer and targetPlayer.getName() or "Unknown"
             if isWhitelisted then
                 xPlayer.showNotification("~g~" .. name .. " is whitelisted")
             else
@@ -1233,12 +1280,25 @@ end
 ---@param playerId number
 ---@param xPlayer any
 local function onPlayerLoaded(playerId, xPlayer)
+    playerId = tonumber(playerId)
+
+    if not playerId or playerId <= 0 then
+        return
+    end
+
+    if onlineSources[playerId] then
+        return
+    end
+
+    onlineSources[playerId] = true
     cachePlayerIdentifiers(playerId)
     onlinePlayerCount = onlinePlayerCount + 1
+
     if isPlayerAdmin(playerId) then
         adminSources[playerId] = true
         onlineAdminCount = onlineAdminCount + 1
     end
+
     handleRuleEvaluation()
 end
 
@@ -1246,11 +1306,20 @@ end
 ---@param playerId number
 ---@param reason string
 local function onPlayerDropped(playerId, reason)
-    clearPlayerIdentifierCache(playerId)
+    playerId = tonumber(playerId)
 
-    if gracePeriodPlayers[playerId] then
-        gracePeriodPlayers[playerId] = nil
+    if not playerId or playerId <= 0 then
+        return
     end
+
+    clearPlayerIdentifierCache(playerId)
+    gracePeriodPlayers[playerId] = nil
+
+    if not onlineSources[playerId] then
+        return
+    end
+
+    onlineSources[playerId] = nil
 
     if adminSources[playerId] then
         adminSources[playerId] = nil
@@ -1258,6 +1327,7 @@ local function onPlayerDropped(playerId, reason)
     end
 
     onlinePlayerCount = math.max(0, onlinePlayerCount - 1)
+
     handleRuleEvaluation()
 end
 
@@ -1268,15 +1338,31 @@ local function reconcileOnlineState()
         Wait(2000)
 
         local players = ESX.GetExtendedPlayers()
+
         onlinePlayerCount = #players
         onlineAdminCount = 0
+
         adminSources = {}
+        onlineSources = {}
+        onlineIdentifierSources = {}
+        playerIdentifierCache = {}
 
         for i = 1, #players do
             local player = players[i]
-            if player and player.source and isPlayerAdmin(player.source) then
-                adminSources[player.source] = true
-                onlineAdminCount = onlineAdminCount + 1
+
+            if player and player.source then
+                local source = tonumber(player.source)
+
+                if source then
+                    onlineSources[source] = true
+
+                    cachePlayerIdentifiers(source)
+
+                    if isPlayerAdmin(source) then
+                        adminSources[source] = true
+                        onlineAdminCount = onlineAdminCount + 1
+                    end
+                end
             end
         end
     end)

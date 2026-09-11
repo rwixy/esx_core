@@ -6,6 +6,9 @@ local ServerConfig <const> = xLib.require "@esx_whitelist.server.config.main"
 ---@class WhitelistService
 local Whitelist = {}
 
+---@type table<number, string[]>
+local playerIdentifierCache = {}
+
 ---@type table<string, number>
 local whitelistCache = {}
 
@@ -23,6 +26,8 @@ local webhookCooldowns = {}
 
 ---@type table<string, string>
 local translations = {}
+
+local compiledRules = {}
 
 local onlinePlayerCount = 0
 local onlineAdminCount = 0
@@ -172,6 +177,8 @@ local function loadConfig()
     state.discordGuildId = parsed.discordGuildId or ""
     state.discordRoleId = parsed.discordRoleId or ""
     state.rules = type(parsed.rules) == "table" and parsed.rules or Config.DefaultRules
+
+    rebuildCompiledRules()
 end
 
 ---Updates in-memory whitelist cache from MySQL
@@ -224,6 +231,26 @@ local function startGracePeriod(playerId, playerName)
     end)
 end
 
+local function cachePlayerIdentifiers(playerId)
+    if not playerId or playerId == 0 then
+        return {}
+    end
+
+    local identifiers = Util.GetPlayerIdentifiersFiltered(playerId)
+    playerIdentifierCache[playerId] = identifiers
+
+    return identifiers
+end
+
+local function getCachedPlayerIdentifiers(playerId)
+    return playerIdentifierCache[playerId]
+        or cachePlayerIdentifiers(playerId)
+end
+
+local function clearPlayerIdentifierCache(playerId)
+    playerIdentifierCache[playerId] = nil
+end
+
 ---Kicks or starts grace period for non-whitelisted players in chunked batches to prevent lag spikes
 local function kickNonWhitelistedPlayers()
     CreateThread(function()
@@ -232,8 +259,8 @@ local function kickNonWhitelistedPlayers()
 
         for i = 1, count do
             local src = tonumber(playerIds[i])
-            if src and not adminSources[src] and not isPlayerAdmin(src) then
-                local identifiers = Util.GetPlayerIdentifiersFiltered(src)
+            if src and not adminSources[src] then
+                local identifiers = getCachedPlayerIdentifiers(src)
                 local isWhitelisted = false
 
                 for j = 1, #identifiers do
@@ -260,23 +287,34 @@ local function kickNonWhitelistedPlayers()
     end)
 end
 
----Evaluates active dynamic whitelist rules in priority order
----@return boolean
-local function evaluateWhitelistRules()
-    local activeRules = {}
+local function rebuildCompiledRules()
+    compiledRules = {}
+
     for i = 1, #state.rules do
-        if state.rules[i].enabled then
-            activeRules[#activeRules + 1] = Class.WhitelistRule.new(state.rules[i])
+        local rule = state.rules[i]
+
+        if rule.enabled then
+            compiledRules[#compiledRules + 1] =
+                Class.WhitelistRule.new(rule)
         end
     end
 
-    table.sort(activeRules, function(a, b)
+    table.sort(compiledRules, function(a, b)
         return a.priority < b.priority
     end)
+end
 
-    for i = 1, #activeRules do
-        local isApplicable, desiredState = activeRules[i]:evaluate(onlinePlayerCount, onlineAdminCount)
-        if isApplicable and (desiredState ~= nil) then
+---Evaluates active dynamic whitelist rules in priority order
+---@return boolean
+local function evaluateWhitelistRules()
+    for i = 1, #compiledRules do
+        local isApplicable, desiredState =
+            compiledRules[i]:evaluate(
+                onlinePlayerCount,
+                onlineAdminCount
+            )
+
+        if isApplicable and desiredState ~= nil then
             return desiredState
         end
     end
@@ -386,7 +424,7 @@ local function getAllPlayerIdentifiers(singleIdentifier, callback)
     for i = 1, #players do
         local targetPlayer = players[i]
         if targetPlayer and targetPlayer.source then
-            local identifiers = Util.GetPlayerIdentifiersFiltered(targetPlayer.source)
+            local identifiers = getCachedPlayerIdentifiers(targetPlayer.source)
             for j = 1, #identifiers do
                 if identifiers[j] == fullIdentifier then
                     local name = GetPlayerName(targetPlayer.source) or targetPlayer.getName()
@@ -434,7 +472,7 @@ local function notifyOnlinePlayerWhitelisted(fullIdentifier)
 end
 
 ---Initializes database schema and ensures required tables and indices exist
-local function initializeDatabase()
+local function initializeDatabase(callback)
     MySQL.query([[
         CREATE TABLE IF NOT EXISTS `whitelist` (
             `id` INT AUTO_INCREMENT PRIMARY KEY,
@@ -444,19 +482,25 @@ local function initializeDatabase()
             `added_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
             INDEX `idx_whitelisted` (`whitelisted`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-    ]])
-
-    MySQL.query([[
-        CREATE TABLE IF NOT EXISTS `whitelist_identifiers` (
-            `id` INT AUTO_INCREMENT PRIMARY KEY,
-            `whitelist_id` INT NOT NULL,
-            `type` VARCHAR(32) NOT NULL,
-            `identifier` VARCHAR(255) NOT NULL COLLATE utf8mb4_bin,
-            FOREIGN KEY (`whitelist_id`) REFERENCES `whitelist`(`id`) ON DELETE CASCADE,
-            UNIQUE KEY `unique_identifier` (`type`, `identifier`),
-            INDEX `idx_identifier` (`identifier`)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-    ]])
+    ]], {}, function()
+        MySQL.query([[
+            CREATE TABLE IF NOT EXISTS `whitelist_identifiers` (
+                `id` INT AUTO_INCREMENT PRIMARY KEY,
+                `whitelist_id` INT NOT NULL,
+                `type` VARCHAR(32) NOT NULL,
+                `identifier` VARCHAR(255) NOT NULL COLLATE utf8mb4_bin,
+                FOREIGN KEY (`whitelist_id`)
+                    REFERENCES `whitelist`(`id`)
+                    ON DELETE CASCADE,
+                UNIQUE KEY `unique_identifier` (`type`, `identifier`),
+                INDEX `idx_identifier` (`identifier`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        ]], {}, function()
+            if callback then
+                callback()
+            end
+        end)
+    end)
 end
 
 ---Inserts a player record idempotently. Re-points existing identifiers to the new
@@ -466,34 +510,48 @@ end
 ---@param whitelisted number
 ---@param onInsert fun(newId: number)?
 local function insertPlayerRecord(realPlayerName, identifiers, whitelisted, onInsert)
-    MySQL.insert("INSERT INTO whitelist (player_name, whitelisted) VALUES (?, ?)", { realPlayerName, whitelisted }, function(insertId)
-        if not insertId then
+    if type(identifiers) ~= "table" or #identifiers == 0 then
+        return
+    end
+
+    local queries = {
+        {
+            query = "INSERT INTO whitelist (player_name, whitelisted) VALUES (?, ?)",
+            values = { realPlayerName, whitelisted }
+        }
+    }
+
+    for i = 1, #identifiers do
+        local idType = identifiers[i]:match("^(%w+):")
+
+        if idType then
+            queries[#queries + 1] = {
+                query = [[
+                    INSERT INTO whitelist_identifiers
+                        (whitelist_id, type, identifier)
+                    VALUES (LAST_INSERT_ID(), ?, ?)
+                    ON DUPLICATE KEY UPDATE
+                        whitelist_id = LAST_INSERT_ID(whitelist_id)
+                ]],
+                values = { idType, identifiers[i] }
+            }
+        end
+    end
+
+    MySQL.transaction(queries, function(success)
+        if not success then
             return
         end
 
-        local inserts = {}
-        for j = 1, #identifiers do
-            local idType = identifiers[j]:match("^(%w+):")
-            if idType then
-                inserts[#inserts + 1] = {
-                    query = "INSERT INTO whitelist_identifiers (whitelist_id, type, identifier) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE whitelist_id = VALUES(whitelist_id)",
-                    values = { insertId, idType, identifiers[j] }
-                }
+        MySQL.query(
+            "SELECT id FROM whitelist WHERE player_name = ? ORDER BY id DESC LIMIT 1",
+            { realPlayerName },
+            function(result)
+                if result and result[1] and onInsert then
+                    onInsert(result[1].id)
+                end
             end
-        end
-
-        local function finalize()
-            MySQL.query("DELETE w FROM whitelist w LEFT JOIN whitelist_identifiers wi ON wi.whitelist_id = w.id WHERE wi.id IS NULL")
-            if onInsert then
-                onInsert(insertId)
-            end
-        end
-
-        if #inserts > 0 then
-            MySQL.transaction(inserts, finalize)
-        else
-            finalize()
-        end
+        )
     end)
 end
 
@@ -836,13 +894,13 @@ local function registerServerCallbacks()
         state.discordGuildId = type(configData.discordGuildId) == "string" and configData.discordGuildId or ""
         state.discordRoleId = type(configData.discordRoleId) == "string" and configData.discordRoleId or ""
         state.rules = type(configData.rules) == "table" and configData.rules or state.rules
+        rebuildCompiledRules()
         isManualOverride = not rulesChanged
 
         saveConfig()
 
         if state.enabled and not oldState then
             sendDiscordLog(Util.Translate(translations, "whitelist_enabled_manual", adminName), Enum.DiscordEmbedColor.DANGER)
-            Wait(1000)
             kickNonWhitelistedPlayers()
         elseif not state.enabled and oldState then
             sendDiscordLog(Util.Translate(translations, "whitelist_disabled_manual", adminName), Enum.DiscordEmbedColor.SUCCESS)
@@ -1175,6 +1233,7 @@ end
 ---@param playerId number
 ---@param xPlayer any
 local function onPlayerLoaded(playerId, xPlayer)
+    cachePlayerIdentifiers(playerId)
     onlinePlayerCount = onlinePlayerCount + 1
     if isPlayerAdmin(playerId) then
         adminSources[playerId] = true
@@ -1187,6 +1246,8 @@ end
 ---@param playerId number
 ---@param reason string
 local function onPlayerDropped(playerId, reason)
+    clearPlayerIdentifierCache(playerId)
+
     if gracePeriodPlayers[playerId] then
         gracePeriodPlayers[playerId] = nil
     end
@@ -1248,22 +1309,24 @@ end
 ---Initializes the whitelist subsystem on resource start
 local function init()
     loadConfig()
-    initializeDatabase()
-    refreshWhitelistCache(function()
-        local status = state.enabled and "enabled" or "disabled"
-        print(("^2[esx_whitelist]^0 Whitelist system initialized - Status: %s - Grace Period: %ss"):format(status, state.gracePeriod))
-    end)
 
-    registerServerCallbacks()
-    registerCommands()
-    reconcileOnlineState()
-    startCacheSweeper()
+    initializeDatabase(function()
+        refreshWhitelistCache(function()
+            local status = state.enabled and "enabled" or "disabled"
+            print(("^2[esx_whitelist]^0 Whitelist system initialized - Status: %s - Grace Period: %ss"):format(status, state.gracePeriod))
 
-    CreateThread(function()
-        while true do
-            Wait(30000)
-            handleRuleEvaluation()
-        end
+            registerServerCallbacks()
+            registerCommands()
+            reconcileOnlineState()
+            startCacheSweeper()
+
+            CreateThread(function()
+                while true do
+                    Wait(30000)
+                    handleRuleEvaluation()
+                end
+            end)
+        end)
     end)
 end
 

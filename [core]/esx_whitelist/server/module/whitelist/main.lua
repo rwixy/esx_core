@@ -157,6 +157,23 @@ local function resetStateToDefaults()
     state.rules = Config.DefaultRules
 end
 
+local function rebuildCompiledRules()
+    compiledRules = {}
+
+    for i = 1, #state.rules do
+        local rule = state.rules[i]
+
+        if rule.enabled then
+            compiledRules[#compiledRules + 1] =
+                Class.WhitelistRule.new(rule)
+        end
+    end
+
+    table.sort(compiledRules, function(a, b)
+        return a.priority < b.priority
+    end)
+end
+
 ---Loads whitelist configuration from disk or initializes defaults
 local function loadConfig()
     translations = Util.LoadLocale(Config.Locale)
@@ -304,23 +321,6 @@ local function kickNonWhitelistedPlayers()
                 Wait(0)
             end
         end
-    end)
-end
-
-local function rebuildCompiledRules()
-    compiledRules = {}
-
-    for i = 1, #state.rules do
-        local rule = state.rules[i]
-
-        if rule.enabled then
-            compiledRules[#compiledRules + 1] =
-                Class.WhitelistRule.new(rule)
-        end
-    end
-
-    table.sort(compiledRules, function(a, b)
-        return a.priority < b.priority
     end)
 end
 

@@ -52,9 +52,9 @@ local WEBHOOK_COOLDOWN_MS <const> = 5000
 ---Discord API resilience settings
 local DISCORD_MAX_ATTEMPTS <const> = 3
 local DISCORD_RETRY_DELAY_MS <const> = 1000
----Fail-open: if Discord is unreachable (after retries / deferral timeout),
----allow the connection instead of locking players out. Set to false to fail-closed.
-local DISCORD_FAIL_OPEN <const> = true
+---Fail-close: if Discord is unreachable (after retries / deferral timeout),
+---lock players out instead of allowing the connection. Set to true to fail-open.
+local DISCORD_FAIL_OPEN <const> = false
 local DISCORD_DEFERRAL_TIMEOUT_MS <const> = 20000
 
 ---Current running state
@@ -207,7 +207,7 @@ end
 ---Updates in-memory whitelist cache from MySQL
 ---@param callback function?
 local function refreshWhitelistCache(callback)
-    local query = "SELECT DISTINCT w.id, wi.identifier FROM whitelist w JOIN whitelist_identifiers wi ON w.id = wi.whitelist_id WHERE CAST(w.whitelisted AS UNSIGNED) = 1"
+    local query = "SELECT DISTINCT w.id, wi.identifier FROM whitelist w JOIN whitelist_identifiers wi ON w.id = wi.whitelist_id WHERE w.whitelisted = 1"
     MySQL.query(query, {}, function(results)
         local newCache = {}
         if results then
@@ -535,7 +535,7 @@ local function initializeDatabase(callback)
                     REFERENCES `whitelist`(`id`)
                     ON DELETE CASCADE,
                 UNIQUE KEY `unique_identifier` (`type`, `identifier`),
-                INDEX `idx_identifier` (`identifier`)
+                INDEX `idx_identifier` (`identifier`),
                 INDEX `idx_whitelist_id` (`whitelist_id`)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
         ]], {}, function()

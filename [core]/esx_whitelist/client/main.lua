@@ -3,9 +3,7 @@ local WhitelistClient <const> = xLib.require "@esx_whitelist.client.module.white
 WhitelistClient.Init()
 
 AddEventHandler("onResourceStop", function(resourceName)
-    if GetCurrentResourceName() ~= resourceName then
-        return
+    if GetCurrentResourceName() == resourceName then
+        SetNuiFocus(false, false)
     end
-
-    SetNuiFocus(false, false)
 end)

@@ -1,9 +1,7 @@
 local Enum <const> = xLib.require "@esx_whitelist.server.module.whitelist.Enum"
 
----@class WhitelistServerUtil
 local Util = {}
 
----@type table<string, boolean>
 local INVALID_TOKENS <const> = {
     ["TU_TOKEN_AQUI"] = true,
     ["YOUR_TOKEN_HERE"] = true,
@@ -12,117 +10,123 @@ local INVALID_TOKENS <const> = {
     ["YOUR_DISCORD_BOT_TOKEN_HERE"] = true
 }
 
----Validates if a Discord bot token is well-formed and not a placeholder
----@param token string?
----@return boolean
+local VALID_TYPES <const> = {
+    steam = true,
+    license = true,
+    license2 = true,
+    discord = true,
+    xbl = true,
+    fivem = true
+}
+
 local function isValidBotToken(token)
-    if not token or token == "" or #token < 50 or not string.match(token, "%.") then
+    if type(token) ~= "string" or token == "" or #token < 50 then
         return false
     end
-
     if INVALID_TOKENS[token] then
         return false
     end
-
-    return true
+    return token:find("%.") ~= nil
 end
 
----Detects the identifier type from raw string value
----@param value string?
----@return string?
+local function stripWhitespace(value)
+    return value:gsub("%s+", "")
+end
+
+local function validateValue(idType, value)
+    if not VALID_TYPES[idType] or type(value) ~= "string" or value == "" then
+        return false
+    end
+
+    if idType == Enum.IdentifierType.LICENSE then
+        return value:match("^[0-9a-fA-F]+$") ~= nil and #value == 40
+    elseif idType == Enum.IdentifierType.LICENSE2 then
+        return (value:match("^[0-9a-fA-F]+%-[0-9a-fA-F]+%-[0-9a-fA-F]+%-[0-9a-fA-F]+%-[0-9a-fA-F]+$") ~= nil and #value == 36) or (value:match("^[0-9a-fA-F]+$") ~= nil and #value == 40)
+    elseif idType == Enum.IdentifierType.DISCORD then
+        return value:match("^%d+$") ~= nil and #value >= 17 and #value <= 19
+    elseif idType == Enum.IdentifierType.XBL then
+        return value:match("^%d+$") ~= nil and #value == 16
+    elseif idType == Enum.IdentifierType.FIVEM then
+        return value:match("^%d+$") ~= nil and #value >= 6 and #value <= 8
+    elseif idType == Enum.IdentifierType.STEAM then
+        return value:match("^[0-9a-fA-F]+$") ~= nil and #value >= 15 and #value <= 17
+    end
+
+    return false
+end
+
 local function detectIdentifierType(value)
-    if not value or value == "" then
+    if type(value) ~= "string" or value == "" then
         return nil
     end
 
-    local cleanValue = value:gsub("%s+", ""):gsub("^%w+:", "")
-    local length = #cleanValue
-
-    if cleanValue:find("^[0-9a-fA-F]+%-[0-9a-fA-F]+%-[0-9a-fA-F]+%-[0-9a-fA-F]+%-[0-9a-fA-F]+$") and length == 36 then
-        return Enum.IdentifierType.LICENSE2
+    local clean = stripWhitespace(value)
+    local prefix, raw = clean:match("^(%w+):(.+)$")
+    if prefix then
+        prefix = prefix:lower()
+        return VALID_TYPES[prefix] and validateValue(prefix, raw) and prefix or nil
     end
 
-    if cleanValue:find("^[0-9a-fA-F]+$") and length == 40 then
-        return Enum.IdentifierType.LICENSE
-    end
-
-    if cleanValue:find("^%d+$") then
-        if length >= 17 and length <= 19 then
-            return Enum.IdentifierType.DISCORD
-        elseif length == 16 then
-            return Enum.IdentifierType.XBL
-        elseif length >= 6 and length <= 8 then
-            return Enum.IdentifierType.FIVEM
-        end
-    end
-
-    if cleanValue:find("^[0-9a-fA-F]+$") and length >= 15 and length <= 17 then
-        return Enum.IdentifierType.STEAM
-    end
+    if validateValue(Enum.IdentifierType.LICENSE2, clean) then return Enum.IdentifierType.LICENSE2 end
+    if validateValue(Enum.IdentifierType.LICENSE, clean) then return Enum.IdentifierType.LICENSE end
+    if validateValue(Enum.IdentifierType.DISCORD, clean) then return Enum.IdentifierType.DISCORD end
+    if validateValue(Enum.IdentifierType.XBL, clean) then return Enum.IdentifierType.XBL end
+    if validateValue(Enum.IdentifierType.FIVEM, clean) then return Enum.IdentifierType.FIVEM end
+    if validateValue(Enum.IdentifierType.STEAM, clean) then return Enum.IdentifierType.STEAM end
 
     return nil
 end
 
----Normalizes an identifier string into type and value
----@param rawValue string?
----@return string?, string?
 local function normalizeIdentifier(rawValue)
-    if not rawValue or rawValue == "" then
+    if type(rawValue) ~= "string" then
         return nil, nil
     end
 
-    local cleanValue = rawValue:gsub("%s+", "")
-    local providedPrefix, providedValue = cleanValue:match("^(%w+):(.+)$")
-    local valueToDetect = providedValue or cleanValue
-    local detectedType = detectIdentifierType(valueToDetect)
-
-    if not detectedType then
+    local clean = stripWhitespace(rawValue)
+    if clean == "" then
         return nil, nil
     end
 
-    return detectedType, valueToDetect
+    local prefix, value = clean:match("^(%w+):(.+)$")
+    if prefix then
+        prefix = prefix:lower()
+        if not VALID_TYPES[prefix] or not validateValue(prefix, value) then
+            return nil, nil
+        end
+        return prefix, value
+    end
+
+    local detected = detectIdentifierType(clean)
+    if not detected then
+        return nil, nil
+    end
+    return detected, clean
 end
 
----Extracts all identifiers for a given player source
----@param playerId number|string
----@return string[]
 local function getPlayerIdentifiersFiltered(playerId)
     local identifiers = {}
-    local license = GetPlayerIdentifierByType(playerId, "license")
-    local license2 = GetPlayerIdentifierByType(playerId, "license2")
-    local steam = GetPlayerIdentifierByType(playerId, "steam")
-    local discord = GetPlayerIdentifierByType(playerId, "discord")
-    local xbl = GetPlayerIdentifierByType(playerId, "xbl")
-    local fivem = GetPlayerIdentifierByType(playerId, "fivem")
+    local types = {
+        Enum.IdentifierType.LICENSE,
+        Enum.IdentifierType.LICENSE2,
+        Enum.IdentifierType.STEAM,
+        Enum.IdentifierType.DISCORD,
+        Enum.IdentifierType.XBL,
+        Enum.IdentifierType.FIVEM
+    }
 
-    if license then
-        identifiers[#identifiers + 1] = "license:" .. license
-    end
-    if license2 then
-        identifiers[#identifiers + 1] = "license2:" .. license2
-    end
-    if steam then
-        identifiers[#identifiers + 1] = "steam:" .. steam
-    end
-    if discord then
-        identifiers[#identifiers + 1] = "discord:" .. discord
-    end
-    if xbl then
-        identifiers[#identifiers + 1] = "xbl:" .. xbl
-    end
-    if fivem then
-        identifiers[#identifiers + 1] = "fivem:" .. fivem
+    for i = 1, #types do
+        local idType = types[i]
+        local value = GetPlayerIdentifierByType(playerId, idType)
+        if value then
+            identifiers[#identifiers + 1] = idType .. ":" .. value
+        end
     end
 
     return identifiers
 end
 
----Builds SQL WHERE clause for multiple identifiers
----@param identifiers string[]
----@return string, string[]
 local function buildIdentifierQuery(identifiers)
-    local conditions = {}
-    local params = {}
+    local conditions, params = {}, {}
     for i = 1, #identifiers do
         conditions[#conditions + 1] = "wi.identifier = ?"
         params[#params + 1] = identifiers[i]
@@ -130,44 +134,20 @@ local function buildIdentifierQuery(identifiers)
     return table.concat(conditions, " OR "), params
 end
 
----Loads translation JSON for the configured locale
----@param localeName string
----@return table<string, string>
 local function loadLocale(localeName)
-    local rawJson = LoadResourceFile(GetCurrentResourceName(), ("locales/%s.json"):format(localeName))
-    if not rawJson then
-        rawJson = LoadResourceFile(GetCurrentResourceName(), "locales/en.json")
-    end
+    local raw = LoadResourceFile(GetCurrentResourceName(), ("locales/%s.json"):format(localeName))
+        or LoadResourceFile(GetCurrentResourceName(), "locales/en.json")
+    if not raw then return {} end
 
-    if not rawJson then
-        return {}
-    end
-
-    local success, decoded = pcall(json.decode, rawJson)
-    if success and type(decoded) == "table" then
-        return decoded
-    end
-
-    return {}
+    local ok, decoded = pcall(json.decode, raw)
+    return ok and type(decoded) == "table" and decoded or {}
 end
 
----Translates a key with optional string formatting
----@param translations table<string, string>
----@param key string
----@param ... any
----@return string
 local function translate(translations, key, ...)
     local template = translations[key] or key
-    if not ... then
-        return template
-    end
-
-    local success, result = pcall(string.format, template, ...)
-    if success then
-        return result
-    end
-
-    return template
+    if select("#", ...) == 0 then return template end
+    local ok, result = pcall(string.format, template, ...)
+    return ok and result or template
 end
 
 Util.IsValidBotToken = isValidBotToken

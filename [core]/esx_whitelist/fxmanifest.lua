@@ -1,8 +1,7 @@
 fx_version "cerulean"
-
 game "gta5"
 description "ESX Dynamic Whitelist System"
-version "2.0.0"
+version "1.0.0"
 lua54 "yes"
 use_fxv2_oal "yes"
 
@@ -25,8 +24,6 @@ ui_page "web/dist/index.html"
 
 files {
     "locales/*.json",
-    "config/**/*.lua",
-    "client/module/**/*.lua",
     "web/dist/**/*"
 }
 

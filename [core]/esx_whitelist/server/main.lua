@@ -1,11 +1,9 @@
 local Whitelist <const> = xLib.require "@esx_whitelist.server.module.whitelist.main"
 
 AddEventHandler("onResourceStart", function(resourceName)
-    if GetCurrentResourceName() ~= resourceName then
-        return
+    if GetCurrentResourceName() == resourceName then
+        Whitelist.Init()
     end
-
-    Whitelist.Init()
 end)
 
 AddEventHandler("playerConnecting", function(playerName, setKickReason, deferrals)

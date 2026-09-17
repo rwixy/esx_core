@@ -1,22 +1,4 @@
----@class WhitelistRuleConfig
----@field id string
----@field type "admin-presence" | "player-count" | "scheduled"
----@field enabled boolean
----@field priority number
----@field operator string?
----@field value number?
----@field action string?
----@field startTime string?
----@field endTime string?
-
 ---@class WhitelistConfig
----@field Locale string
----@field Debug boolean
----@field UICommand string
----@field AdminGroups string[]
----@field ConsoleCommands boolean
----@field InGameCommands boolean
----@field DefaultRules WhitelistRuleConfig[]
 Config = {}
 
 Config.Locale = "en"
@@ -56,6 +38,7 @@ Config.DefaultRules = {
         enabled = false,
         priority = 3,
         startTime = "03:00",
-        endTime = "08:00"
+        endTime = "08:00",
+        action = "enable"
     }
 }

@@ -1,5 +1,7 @@
 local Enum <const> = xLib.require "@esx_whitelist.server.module.whitelist.Enum"
 
+---@class WhitelistRule
+---@description Represents a single whitelist rule with type, operator, value, and scheduling for automatic state changes.
 local WhitelistRule = {}
 WhitelistRule.__index = WhitelistRule
 
@@ -22,6 +24,9 @@ local function compare(count, operator, target)
     return false
 end
 
+---@description Creates a new WhitelistRule instance from raw data.
+---@param data table Rule configuration data
+---@return table whitelistRule
 function WhitelistRule.new(data)
     data = type(data) == "table" and data or {}
     local self = setmetatable({}, WhitelistRule)
@@ -39,6 +44,12 @@ function WhitelistRule.new(data)
     return self
 end
 
+---@description Evaluates the rule against current server conditions.
+---@param onlineCount number Current online player count
+---@param adminCount number Current admin count
+---@param currentMinutes? number Current time in minutes from midnight
+---@return boolean applicable
+---@return boolean? enable
 function WhitelistRule:evaluate(onlineCount, adminCount, currentMinutes)
     if not self.enabled then return false, nil end
 

@@ -13,6 +13,8 @@ shared_scripts {
 
 server_scripts {
     "@oxmysql/lib/MySQL.lua",
+    "server/config/main.lua",
+    "server/module/whitelist/*.lua",
     "server/main.lua"
 }
 
@@ -24,6 +26,10 @@ ui_page "web/dist/index.html"
 
 files {
     "locales/*.json",
+
+    "client/*.lua",
+    "client/**/*.lua",
+
     "web/dist/**/*"
 }
 

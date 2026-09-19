@@ -2,7 +2,7 @@
 Config = {}
 
 Config.Locale = "en"
-Config.Debug = false
+Config.Debug = true
 Config.UICommand = "whitelist"
 
 Config.AdminGroups = {
@@ -10,8 +10,23 @@ Config.AdminGroups = {
     "mod"
 }
 
-Config.ConsoleCommands = true
+-- ACE permissions used while a player is still connecting, before ESX has
+-- created an xPlayer. Grant this dedicated permission in server.cfg.
+Config.AdminAcePermissions = {
+    "esx_whitelist.admin"
+}
+
 Config.InGameCommands = true
+
+---@description Console command names for whitelist management.
+Config.Commands = {
+    Add = "wl_add",
+    Remove = "wl_remove",
+    Check = "wl_check",
+    On = "wl_on",
+    Off = "wl_off",
+    Sync = "wl_sync",
+}
 
 Config.DefaultRules = {
     {

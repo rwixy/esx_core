@@ -26,6 +26,7 @@ export interface WhitelistConfig {
   discordEnabled: boolean
   discordGuildId: string
   discordRoleId: string
+  authorizationMethod: 'identifier' | 'discord'
   rules: WhitelistRule[]
   locale?: string
   translations?: Record<string, string>

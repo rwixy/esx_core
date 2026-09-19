@@ -7,31 +7,38 @@ local Validation <const> = xLib.require "@esx_whitelist.server.module.whitelist.
 local Discord <const> = xLib.require "@esx_whitelist.server.module.whitelist.discord"
 local Util <const> = xLib.require "@esx_whitelist.server.module.whitelist.util"
 local Enum <const> = xLib.require "@esx_whitelist.server.module.whitelist.Enum"
+local Connection <const> = xLib.require "@esx_whitelist.server.module.whitelist.connection"
 
+---@class Callbacks
+---@description NUI server callbacks for the whitelist admin panel (getConfig, getWhitelistEntries, updateConfig, etc.).
 local Callbacks = {}
-local function allowed(source) return source and source > 0 and Auth.IsAdmin(source) end
+
+local function allowed(source)
+    source = tonumber(source)
+    return source and source > 0 and Auth.IsAdmin(source) or false
+end
+
 local function adminName(source)
     local xPlayer = ESX.GetPlayerFromId(source)
-    return xPlayer and xPlayer.getName() or "Admin"
+    return xPlayer and xPlayer.getName() or GetPlayerName(source) or "Admin"
 end
 
 local function getAllIdentifiers(identifier, cb)
     local online = Cache.FindOnline(identifier)
     if online then
         local xPlayer = ESX.GetPlayerFromId(online)
-        return cb(Cache.GetIdentifiers(online), GetPlayerName(online) or (xPlayer and xPlayer.getName()) or "Unknown", true)
+        return cb(Cache.GetIdentifiers(online), GetPlayerName(online) or (xPlayer and xPlayer.getName()) or "Unknown", true, online)
     end
+
     Database.FindByIdentifier(identifier, function(row)
-        if not row then return cb({ identifier }, nil, false) end
-        Database.GetIdentifiers(row.id, function(rows)
-            local identifiers = {}
-            for i = 1, #(rows or {}) do identifiers[#identifiers + 1] = rows[i].identifier end
-            cb(identifiers, row.player_name, false)
+        if not row then return cb({ identifier }, nil, false, nil) end
+        Database.GetIdentifierList(row.id, function(identifiers)
+            cb(identifiers, row.player_name, false, nil)
         end)
     end)
 end
 
-function Callbacks.Register(translations, onStateChanged, onCacheChanged)
+function Callbacks.Register(translations, onStateChanged)
     ESX.RegisterServerCallback("esx_whitelist:getConfig", function(source, cb)
         if not allowed(source) then return cb(nil) end
         cb({
@@ -42,6 +49,7 @@ function Callbacks.Register(translations, onStateChanged, onCacheChanged)
             discordEnabled = State.config.discordEnabled,
             discordGuildId = State.config.discordGuildId,
             discordRoleId = State.config.discordRoleId,
+            authorizationMethod = State.config.authorizationMethod,
             rules = State.config.rules,
             locale = Config.Locale,
             translations = translations,
@@ -50,77 +58,101 @@ function Callbacks.Register(translations, onStateChanged, onCacheChanged)
     end)
 
     ESX.RegisterServerCallback("esx_whitelist:getWhitelistEntries", function(source, cb, request)
-        if not allowed(source) then return cb({ entries = {}, page = 1, limit = 50, total = 0, totalPages = 0 }) end
+        if not allowed(source) then
+            return cb({ entries = {}, page = 1, limit = 50, total = 0, totalPages = 0 })
+        end
         Database.Search(type(request) == "table" and request or {}, cb)
     end)
 
     ESX.RegisterServerCallback("esx_whitelist:updateConfig", function(source, cb, data)
         if not allowed(source) or type(data) ~= "table" then return cb(false) end
-        if data.discordEnabled and not Discord.HasValidToken() then
-            TriggerClientEvent("esx:showNotification", source, "~r~Discord bot token not configured")
+
+        if (data.authorizationMethod == "discord" or data.discordEnabled) and not Discord.HasValidToken() then
+            TriggerClientEvent("esx:showNotification", source, "~r~" .. Util.Translate(translations, "discord_no_token"))
             return cb(false)
         end
+
         local ok, err, oldEnabled = ConfigService.Apply(data)
         if not ok then
-            TriggerClientEvent("esx:showNotification", source, "~r~" .. (err or "Invalid configuration"))
+            TriggerClientEvent("esx:showNotification", source, "~r~" .. (err or Util.Translate(translations, "invalid_configuration")))
             return cb(false)
         end
-        if State.config.enabled and not oldEnabled then
-            onStateChanged(true, true, adminName(source))
-        elseif not State.config.enabled and oldEnabled then
-            onStateChanged(false, true, adminName(source))
+
+        if State.config.enabled ~= oldEnabled then
+            onStateChanged(State.config.enabled, true, adminName(source))
         else
+            -- A configuration change can enable Discord authorization or alter rules.
+            -- Re-check connected players without pretending that only DB entries count.
             TriggerClientEvent("esx_whitelist:stateChanged", -1, State.config.enabled)
+            if State.config.enabled then
+                Connection.KickNonWhitelisted(State.translations)
+            end
         end
+
         TriggerClientEvent("esx:showNotification", source, "~g~" .. Util.Translate(translations, "config_saved"))
         cb(true)
     end)
 
     ESX.RegisterServerCallback("esx_whitelist:testWebhook", function(source, cb)
         if not allowed(source) then return cb(false) end
-        local sent = Discord.SendLog(Util.Translate(translations, "webhook_test", adminName(source)), Enum.DiscordEmbedColor.PRIMARY, translations)
-        cb(sent)
+        cb(Discord.SendLog(Util.Translate(translations, "webhook_test", adminName(source)), Enum.DiscordEmbedColor.PRIMARY, translations))
     end)
 
     ESX.RegisterServerCallback("esx_whitelist:managePlayer", function(source, cb, data)
-        if not allowed(source) or type(data) ~= "table" then return cb(false, "Invalid request") end
-        if data.action ~= "add" and data.action ~= "remove" then return cb(false, "Invalid request") end
-        local fullIdentifier, idType = Validation.Identifier(data.identifier)
-        if not fullIdentifier then return cb(false, "Invalid identifier format") end
+        if not allowed(source) or type(data) ~= "table" then return cb(false, Util.Translate(translations, "invalid_request")) end
+        if data.action ~= "add" and data.action ~= "remove" then return cb(false, Util.Translate(translations, "invalid_request")) end
+
+        local fullIdentifier = Validation.Identifier(data.identifier)
+        if not fullIdentifier then return cb(false, Util.Translate(translations, "invalid_identifier")) end
+
         local xPlayer = ESX.GetPlayerFromId(source)
-        if not xPlayer then return cb(false, "Error getting admin data") end
+        if not xPlayer then return cb(false, Util.Translate(translations, "error_getting_admin_data")) end
 
         if data.action == "add" then
-            getAllIdentifiers(fullIdentifier, function(allIdentifiers, existingName, isOnline)
+            getAllIdentifiers(fullIdentifier, function(allIdentifiers, existingName, isOnline, onlineSource)
                 local targetName = existingName or "Pending..."
                 Database.FindByIdentifier(fullIdentifier, function(existing)
                     local function complete(id)
-                        if not id then return cb(false, "Failed to update whitelist") end
-                        for i = 1, #allIdentifiers do Cache.SetWhitelist(allIdentifiers[i], id) end
-                        if isOnline and State.gracePlayers[Cache.FindOnline(fullIdentifier)] then
-                            local target = Cache.FindOnline(fullIdentifier)
-                            State.gracePlayers[target] = nil
-                            TriggerClientEvent("esx_whitelist:cancelGracePeriod", target)
+                        if not id then return cb(false, Util.Translate(translations, "failed_to_update")) end
+                        Cache.SetWhitelistBatch(allIdentifiers, id)
+                        if isOnline and onlineSource and State.gracePlayers[onlineSource] then
+                            State.gracePlayers[onlineSource] = nil
+                            TriggerClientEvent("esx_whitelist:cancelGracePeriod", onlineSource)
                         end
-                        cb(true, "Player added successfully")
+                        cb(true, Util.Translate(translations, "player_added_success"))
                     end
+
                     if existing then
-                        if existing.whitelisted == 1 then return cb(false, "Player already whitelisted") end
-                        Database.SetStatus(existing.id, 1, xPlayer.getIdentifier(), function()
-                            Database.AddIdentifiers(existing.id, allIdentifiers, function() complete(existing.id) end)
+                        if tonumber(existing.whitelisted) == 1 then return cb(false, Util.Translate(translations, "player_already_wl")) end
+                        Database.AddIdentifiers(existing.id, allIdentifiers, function(success)
+                            if not success then return cb(false, Util.Translate(translations, "identifier_conflict")) end
+                            Database.SetStatus(existing.id, 1, xPlayer.getIdentifier(), function(affected)
+                                if not affected or affected < 1 then return cb(false, Util.Translate(translations, "failed_to_update")) end
+                                complete(existing.id)
+                            end)
                         end)
                     else
-                        Database.InsertPlayer(targetName, allIdentifiers, true, xPlayer.getIdentifier(), complete)
+                        Database.InsertPlayer(targetName, allIdentifiers, true, xPlayer.getIdentifier(), function(id, err)
+                            if not id then
+                                if err == "identifier_already_exists" then
+                                    return cb(false, Util.Translate(translations, "identifier_conflict"))
+                                end
+                                return cb(false, Util.Translate(translations, "failed_to_update"))
+                            end
+                            complete(id)
+                        end)
                     end
                 end)
             end)
         else
             Database.FindByIdentifier(fullIdentifier, function(existing)
-                if not existing or existing.whitelisted == 0 then return cb(false, "Player not in whitelist") end
-                Database.SetStatus(existing.id, 0, nil, function()
-                    Database.GetIdentifiers(existing.id, function(rows)
-                        for i = 1, #(rows or {}) do Cache.RemoveWhitelist(rows[i].identifier) end
-                        cb(true, "Player removed successfully")
+                if not existing or tonumber(existing.whitelisted) ~= 1 then return cb(false, Util.Translate(translations, "player_not_in_wl")) end
+
+                Database.GetIdentifierList(existing.id, function(identifiers)
+                    Database.SetStatus(existing.id, 0, xPlayer.getIdentifier(), function(affected)
+                        if not affected or affected < 1 then return cb(false, Util.Translate(translations, "failed_to_update")) end
+                        Cache.RemoveWhitelistBatch(identifiers)
+                        cb(true, Util.Translate(translations, "player_removed_success"))
                     end)
                 end)
             end)
@@ -131,12 +163,29 @@ function Callbacks.Register(translations, onStateChanged, onCacheChanged)
         if not allowed(source) or type(data) ~= "table" then return cb(false) end
         local id, status = tonumber(data.id), tonumber(data.status)
         if not id or (status ~= 0 and status ~= 1) then return cb(false) end
-        Database.SetStatus(id, status, nil, function(affected)
-            if not affected or affected < 1 then return cb(false) end
-            Database.GetIdentifiers(id, function(rows)
-                for i = 1, #(rows or {}) do
-                    if status == 1 then Cache.SetWhitelist(rows[i].identifier, id) else Cache.RemoveWhitelist(rows[i].identifier) end
+
+        Database.GetIdentifierList(id, function(identifiers)
+            if #identifiers == 0 then return cb(false) end
+            Database.SetStatus(id, status, adminName(source), function(affected)
+                if not affected or affected < 1 then return cb(false) end
+
+                if status == 1 then
+                    Cache.SetWhitelistBatch(identifiers, id)
+                else
+                    Cache.RemoveWhitelistBatch(identifiers)
                 end
+
+                if status == 0 then
+                    -- If this entry belongs to an online player, immediately re-evaluate.
+                    for i = 1, #identifiers do
+                        local onlineSource = Cache.FindOnline(identifiers[i])
+                        if onlineSource then
+                            Connection.Enforce(onlineSource, translations)
+                            break
+                        end
+                    end
+                end
+
                 cb(true)
             end)
         end)

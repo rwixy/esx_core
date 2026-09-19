@@ -1,74 +1,128 @@
-<h1 align='center'>ESX Whitelist System</h1>
-<p align='center'><a href='https://discord.esx-framework.org/'>Discord</a> - <a href='https://esx-framework.org/'>Website</a> - <a href='https://docs.esx-framework.org/en'>Documentation</a></p>
+# ESX Whitelist
 
-<p align='center'><b>Dynamic whitelist with automated rules and Discord integration</b></p>
+ESX/FiveM whitelist system with database identifiers, optional Discord role verification, automatic rules, and an admin NUI control panel.
 
-<hr>
+## Authorization flow
 
-## ✨ Features
+Connection authorization is always evaluated in this order:
 
-- 🎯 Dynamic whitelist control without restarts
-- ⏱️ Grace period system before kick
-- 🎨 Modern tablet-style UI panel
-- 🔍 Auto-detect identifiers (License, Steam, Discord, XBL, FiveM)
-- 🤖 Automated rules (player count, admin presence, scheduled)
-- 🔔 Discord webhook logs + role verification
-- ⚡ Optimized performance (6x faster queries)
-- 🔐 Secure with rate limiting & validation
+1. **Configured identifier allowlist** → **ALLOW** without a database or Discord check.
+2. **ESX/ACE admin** → add or re-enable their identifier entry in the database, then **ALLOW**.
+3. **Whitelist disabled** → **KICK** for every non-exception player. The master switch remains fail-closed outside configured and administrator exceptions.
+4. **Identifier mode** → only an enabled database-whitelist identifier can **ALLOW**.
+5. **Discord mode** → verify the configured Discord guild role, persist the player's identifiers, then **ALLOW**.
+6. No selected-method check passes → **KICK**.
 
----
+Choose **Identifier database** or **Discord role** in the panel's Discord Integration card. The methods are intentionally separate: enabling Discord does not turn it into a fallback for database identifiers. Administrators and successful Discord-role authorizations are saved to the identifier whitelist for audit and recovery.
 
-## 📦 Installation
+## Requirements
 
-1. Extract to `resources/esx_whitelist`
-2. Add to `server.cfg`: `ensure esx_whitelist`
-3. Configure Discord token in `server/cfg_discord.lua` (optional)
-4. Restart server
+- `es_extended`
+- `esx_lib`
+- `oxmysql`
+- Discord bot token only if Discord role verification is enabled
 
-**Requirements:** ESX Legacy, oxmysql, ox_lib
+## Installation
 
----
+1. Copy the resource to your server resources directory.
+2. Import `install.sql` into the server database, or allow the resource to create the tables on first start.
+3. Add the resource to `server.cfg` after its dependencies:
 
-## 🎮 Commands
-
-**In-Game (Admin)**
-```
-/whitelist          - Open panel
-/wl_add [id]       - Add player
-/wl_check [id]     - Check status
+```cfg
+ensure es_extended
+ensure esx_lib
+ensure oxmysql
+ensure esx_whitelist
 ```
 
-**Console**
+4. If Discord verification is enabled, configure the bot token in `server.cfg`:
+
+```cfg
+set discord:botToken "YOUR_DISCORD_BOT_TOKEN"
 ```
-wl_add [identifier]     - Add by identifier
-wl_remove [identifier]  - Remove player
-wl_on / wl_off         - Toggle whitelist
+
+Never put the Discord bot token in the resource files.
+
+## NUI
+
+Open the admin panel with:
+
+```text
+/whitelist
 ```
 
----
+Only configured ESX admin groups can use the NUI server callbacks.
 
-## ⚙️ Configuration
+The panel supports:
 
-Edit `config.lua`:
+- Master whitelist switch
+- Grace period
+- Immediate-kick option for connected unauthorized players
+- Discord role configuration
+- Discord webhook test
+- Automatic whitelist rules
+- Add/remove whitelist identifiers
+- Search and pagination
+- Grant/revoke database whitelist status
+
+The production UI is served from `web/dist/index.html`. If you modify `web/src`, rebuild the UI with the project's normal Node/Vite build and deploy the resulting `web/dist` directory.
+
+## Commands
+
+```text
+/wl_add [player id]       Add a connected player to the database whitelist
+/wl_remove [player id]    Remove a connected player from the database whitelist
+/wl_check [player id]     Check authorization and show the method used
+/wl_on                    Enable whitelist
+/wl_off                   Disable whitelist
+/wl_sync                  Refresh the in-memory database whitelist cache
+```
+
+Add server-side identifier exceptions in `server/config/main.lua`:
+
 ```lua
-Config.Locale = 'en'
-Config.UICommand = 'whitelist'
-Config.AdminGroups = { 'admin', 'mod' }
+ServerConfig.AllowedIdentifiers = {
+    "license2:your-license-identifier",
+    "discord:123456789012345678"
+}
 ```
 
-Discord token in `server/cfg_discord.lua`:
+## Admin permissions
+
+`config/main.lua` controls ESX admin groups:
+
 ```lua
-Config.DiscordBotToken = "YOUR_BOT_TOKEN"
+Config.AdminGroups = {
+    "admin",
+    "mod"
+}
 ```
 
----
+Add the permission in `server.cfg` for each staff group. `add_principal` only assigns a principal; it does **not** make `group.admin` a permission that a resource can check.
 
-## 💬 Support
+```cfg
+add_principal identifier.fivem:123456 group.admin
+add_ace group.admin esx_whitelist.admin allow
+```
 
-- [ESX Discord](https://discord.esx-framework.org/)
-- [ESX Documentation](https://docs.esx-framework.org/en)
+Use the identifier type that you actually assign in your server configuration (for example, `identifier.fivem:...` or `identifier.license:...`).
 
----
+## Automatic rules
 
-<p align='center'><b>Developed by ESX TEAM - Alx</b></p>
-<p align='center'>Made with ❤️ for the ESX Community</p>
+Rules are evaluated by priority. The first applicable enabled rule determines the desired master whitelist state.
+
+Supported rule types:
+
+- `admin-presence`
+- `player-count`
+- `scheduled`
+
+If no rule is applicable, the current master state is retained.
+
+## Security notes
+
+- Discord bot tokens are read from the `discord:botToken` server convar.
+- Discord webhook URLs are stored in the resource configuration only when explicitly configured through the NUI.
+- Identifier conflicts are rejected instead of silently ignored.
+- Database and Discord authorization are performed server-side.
+- The master whitelist switch is fail-closed for non-exception players: configured identifiers and verified administrators can still enter while it is disabled.

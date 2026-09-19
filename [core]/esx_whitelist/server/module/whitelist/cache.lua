@@ -1,19 +1,67 @@
 local State <const> = xLib.require "@esx_whitelist.server.module.whitelist.state"
 local Util <const> = xLib.require "@esx_whitelist.server.module.whitelist.util"
 
+---@class Cache
+---@description Manages in-memory caches for whitelist entries, player identifiers, and online player tracking.
 local Cache = {}
+local whitelistGeneration = 0
 
-function Cache.SetWhitelist(identifier, id)
-    if identifier and id then State.whitelistCache[identifier] = id end
+local function bumpWhitelistGeneration()
+    whitelistGeneration = whitelistGeneration + 1
 end
 
+---@description Starts a whitelist refresh cycle and returns the new generation number.
+---@return number generation
+function Cache.BeginWhitelistRefresh()
+    whitelistGeneration = whitelistGeneration + 1
+    return whitelistGeneration
+end
+
+---@description Sets a single whitelist identifier to a whitelist ID.
+---@param identifier string The identifier string
+---@param id number The whitelist database ID
+function Cache.SetWhitelist(identifier, id)
+    if not identifier or not id then return end
+    bumpWhitelistGeneration()
+    State.whitelistCache[identifier] = id
+end
+
+---@description Sets multiple whitelist identifiers to the same whitelist ID.
+---@param identifiers string[] List of identifier strings
+---@param id number The whitelist database ID
+function Cache.SetWhitelistBatch(identifiers, id)
+    if not id then return end
+    bumpWhitelistGeneration()
+    for i = 1, #(identifiers or {}) do
+        State.whitelistCache[identifiers[i]] = id
+    end
+end
+
+---@description Removes a whitelist identifier mapping.
+---@param identifier string The identifier string
 function Cache.RemoveWhitelist(identifier)
+    if not identifier then return end
+    bumpWhitelistGeneration()
     State.whitelistCache[identifier] = nil
 end
 
+---@description Removes multiple whitelist identifier mappings.
+---@param identifiers string[] List of identifier strings
+function Cache.RemoveWhitelistBatch(identifiers)
+    bumpWhitelistGeneration()
+    for i = 1, #(identifiers or {}) do
+        State.whitelistCache[identifiers[i]] = nil
+    end
+end
+
+---@description Sets and indexes a player's identifiers.
+---@param source number The player source ID
+---@param identifiers string[] List of identifier strings
+---@return string[] identifiers
 function Cache.SetIdentifiers(source, identifiers)
     source = tonumber(source)
-    if not source or source <= 0 then return identifiers or {} end
+    identifiers = identifiers or {}
+    if not source or source <= 0 then return identifiers end
     Cache.ClearIdentifiers(source)
     State.playerIdentifiers[source] = identifiers
     for i = 1, #identifiers do
@@ -22,12 +70,17 @@ function Cache.SetIdentifiers(source, identifiers)
     return identifiers
 end
 
+---@description Gets a player's identifiers, fetching them if not cached.
+---@param source number The player source ID
+---@return string[] identifiers
 function Cache.GetIdentifiers(source)
     source = tonumber(source)
     if not source or source <= 0 then return {} end
     return State.playerIdentifiers[source] or Cache.SetIdentifiers(source, Util.GetPlayerIdentifiersFiltered(source))
 end
 
+---@description Clears a player's cached identifiers and online index.
+---@param source number The player source ID
 function Cache.ClearIdentifiers(source)
     source = tonumber(source)
     if not source then return end
@@ -42,19 +95,31 @@ function Cache.ClearIdentifiers(source)
     State.playerIdentifiers[source] = nil
 end
 
+---@description Finds which online player owns an identifier.
+---@param identifier string The identifier string
+---@return number? onlineSource
 function Cache.FindOnline(identifier)
     return State.onlineIdentifierSources[identifier]
 end
 
-function Cache.ReplaceWhitelist(newCache)
+---@description Replaces the whitelist cache if the generation matches.
+---@param newCache table New whitelist cache
+---@param generation number Expected generation
+---@return boolean success
+function Cache.ReplaceWhitelist(newCache, generation)
+    if generation and generation ~= whitelistGeneration then return false end
     State.whitelistCache = newCache or {}
+    return true
 end
 
+---@description Checks if any identifier is in the whitelist cache.
+---@param identifiers string[] List of identifier strings
+---@return boolean isWhitelisted
+---@return number? whitelistId
 function Cache.IsWhitelisted(identifiers)
-    for i = 1, #identifiers do
-        if State.whitelistCache[identifiers[i]] then
-            return true, State.whitelistCache[identifiers[i]]
-        end
+    for i = 1, #(identifiers or {}) do
+        local id = State.whitelistCache[identifiers[i]]
+        if id then return true, id end
     end
     return false, nil
 end

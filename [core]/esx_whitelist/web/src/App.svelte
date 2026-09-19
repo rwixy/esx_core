@@ -25,6 +25,7 @@
     discordEnabled: true,
     discordGuildId: '123456789012345678',
     discordRoleId: '987654321098765432',
+    authorizationMethod: 'discord',
     rules: [
       { id: '1', type: 'admin-presence', enabled: true, priority: 1, operator: '<', value: 1, action: 'enable' },
       { id: '2', type: 'player-count', enabled: false, priority: 2, operator: '>', value: 64, action: 'enable' },
@@ -68,6 +69,7 @@
     discordEnabled: false,
     discordGuildId: '',
     discordRoleId: '',
+    authorizationMethod: 'identifier',
     rules: []
   })
 
@@ -77,6 +79,7 @@
   let totalEntries = $state(0)
   let totalPages = $state(0)
   let isLoadingEntries = $state(false)
+  let entriesRequest = 0
   let searchTimer: ReturnType<typeof setTimeout> | null = null
   let newIdentifier = $state('')
   let newAction = $state<'add' | 'remove'>('add')
@@ -91,6 +94,17 @@
   let newRuleStartTime = $state('00:00')
   let newRuleEndTime = $state('06:00')
 
+  function isWhitelisted(entry: { whitelisted: number | string | boolean }): boolean {
+    return Number(entry.whitelisted) === 1
+  }
+
+  function normalizeEntries(resultEntries: WhitelistEntry[]): WhitelistEntry[] {
+    return resultEntries.map((entry) => ({
+      ...entry,
+      whitelisted: isWhitelisted(entry) ? 1 : 0
+    }))
+  }
+
   function showToast(text: string, type: 'success' | 'danger' | 'info' = 'info') {
     notification = { text, type }
     if (type === 'success') sounds.playSuccess()
@@ -101,6 +115,8 @@
       notification = null
     }, 3000)
   }
+
+  const browserSuccess = <T>() => true as unknown as T
 
   async function postNui<T = unknown>(action: string, data: unknown = {}): Promise<T | null> {
     if (isBrowser) {
@@ -139,13 +155,13 @@
         } as unknown as T
       }
       if (action === 'updateConfig') {
-        return true as unknown as T
+        return browserSuccess<T>()
       }
       if (action === 'testWebhook') {
-        return true as unknown as T
+        return browserSuccess<T>()
       }
       if (action === 'toggleWhitelistStatus') {
-        return true as unknown as T
+        return browserSuccess<T>()
       }
       if (action === 'managePlayer') {
         const payload = data as { identifier?: string; action?: string }
@@ -208,30 +224,30 @@
   }
 
   async function loadEntries(page = currentPage, search = searchQuery) {
-    if (isLoadingEntries) return
+    const requestId = ++entriesRequest
     isLoadingEntries = true
 
     try {
-        const result = await postNui<{
-            entries: WhitelistEntry[]
-            page: number
-            limit: number
-            total: number
-            totalPages: number
-        }>('getWhitelistEntries', {
-            page,
-            limit: pageSize,
-            search: search.trim()
-        })
+      const result = await postNui<{
+        entries: WhitelistEntry[]
+        page: number
+        limit: number
+        total: number
+        totalPages: number
+      }>('getWhitelistEntries', {
+        page,
+        limit: pageSize,
+        search: search.trim()
+      })
 
-        if (result) {
-            entries = result.entries ?? []
-            currentPage = result.page ?? page
-            totalEntries = result.total ?? 0
-            totalPages = result.totalPages ?? 0
-        }
+      if (!result || requestId !== entriesRequest) return
+
+      entries = normalizeEntries(result.entries ?? [])
+      currentPage = result.page ?? page
+      totalEntries = result.total ?? 0
+      totalPages = result.totalPages ?? 0
     } finally {
-        isLoadingEntries = false
+      if (requestId === entriesRequest) isLoadingEntries = false
     }
   }
 
@@ -258,7 +274,7 @@
 
   async function toggleStatus(entry: WhitelistEntry) {
     sounds.playClick()
-    const newStatus = entry.whitelisted === 1 ? 0 : 1
+    const newStatus = isWhitelisted(entry) ? 0 : 1
     const ok = await postNui<boolean>('toggleWhitelistStatus', {
       id: entry.id,
       status: newStatus
@@ -267,10 +283,10 @@
     if (ok) {
       entries = entries.map((item) =>
         item.id === entry.id
-            ? { ...item, whitelisted: newStatus }
-            : item
+          ? { ...item, whitelisted: newStatus }
+          : item
       )
-      showToast(`Status updated to ${newStatus === 1 ? 'Whitelisted' : 'Not Whitelisted'}`,'success')
+      showToast(`Status updated to ${newStatus === 1 ? 'Whitelisted' : 'Not Whitelisted'}`, 'success')
     } else {
       showToast('Failed to update status', 'danger')
     }
@@ -334,6 +350,10 @@
         loadEntries()
       } else if (item.action === 'closeUI') {
         visible = false
+      } else if (item.action === 'whitelistStateChanged' && item.data) {
+        config = { ...config, ...item.data }
+      } else if (item.action === 'whitelistEntryChanged' && visible) {
+        loadEntries()
       }
     }
 
@@ -479,20 +499,13 @@
             <h3>Discord Integration</h3>
             <p class="card-desc">Automatic role verification and audit log webhook</p>
 
-            <div class="setting-row">
-              <div class="setting-info">
-                <span class="setting-label">Role Verification</span>
-                <p class="setting-hint">Verify membership role in Discord Guild</p>
-              </div>
-              <label class="switch" for="discord-toggle">
-                <input
-                  id="discord-toggle"
-                  type="checkbox"
-                  bind:checked={config.discordEnabled}
-                  onchange={() => sounds.playToggle(config.discordEnabled)}
-                />
-                <span class="slider"></span>
-              </label>
+            <div class="input-group">
+              <label for="authorization-method" class="input-label">Whitelist Method</label>
+              <select id="authorization-method" class="select-input" bind:value={config.authorizationMethod} onchange={() => sounds.playClick()}>
+                <option value="identifier">Identifier database</option>
+                <option value="discord">Discord role</option>
+              </select>
+              <p class="setting-hint">Players must pass the selected method. Administrators are always added to the identifier database.</p>
             </div>
 
             <div class="input-group">
@@ -743,8 +756,8 @@
                       <strong>{entry.playerName}</strong>
                     </td>
                     <td>
-                      <span class="badge" class:badge-success={entry.whitelisted === 1} class:badge-danger={entry.whitelisted === 0}>
-                        {entry.whitelisted === 1 ? 'Whitelisted' : 'Unwhitelisted'}
+                      <span class="badge" class:badge-success={isWhitelisted(entry)} class:badge-danger={!isWhitelisted(entry)}>
+                        {isWhitelisted(entry) ? 'Whitelisted' : 'Unwhitelisted'}
                       </span>
                     </td>
                     <td>
@@ -770,7 +783,7 @@
                         class="btn btn-ghost btn-sm"
                         onclick={() => toggleStatus(entry)}
                       >
-                        {entry.whitelisted === 1 ? 'Revoke' : 'Grant'}
+                        {isWhitelisted(entry) ? 'Revoke' : 'Grant'}
                       </button>
                     </td>
                   </tr>

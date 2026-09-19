@@ -31,8 +31,7 @@ Enum.RuleAction = {
 Enum.DiscordEmbedColor = {
     SUCCESS = 3066993,
     DANGER = 15158332,
-    PRIMARY = 3447003,
-    WARNING = 16489220
+    PRIMARY = 3447003
 }
 
 return Enum

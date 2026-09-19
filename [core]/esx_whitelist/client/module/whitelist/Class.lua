@@ -9,7 +9,13 @@ function WhitelistUI.new()
     self.isGraceActive = false
     self.graceThreadRunning = false
     self.graceEndTime = 0
-    self.translations = Util.LoadLocale(Config.Locale)
+    self.config = {}
+    if Config then
+        self.translations = Util.LoadLocale(Config.Locale)
+    else
+        self.translations = {}
+        print("^1[esx_whitelist] Config is nil in WhitelistUI.new^7")
+    end
     return self
 end
 

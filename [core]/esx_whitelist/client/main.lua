@@ -1,6 +1,9 @@
-local WhitelistClient <const> = xLib.require "@esx_whitelist.client.module.whitelist.main"
+local ok, result = pcall(function()
+    return xLib.require "@esx_whitelist.client.module.whitelist.main"
+end)
 
-WhitelistClient.Init()
+if not ok then return end
+result.Init()
 
 AddEventHandler("onResourceStop", function(resourceName)
     if GetCurrentResourceName() == resourceName then

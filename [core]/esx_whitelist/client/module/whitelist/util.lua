@@ -9,6 +9,7 @@ function Util.LoadLocale(localeName)
 end
 
 function Util.Translate(translations, key, ...)
+    if not translations then return key end
     local template = translations[key] or key
     if select("#", ...) == 0 then return template end
     local ok, result = pcall(string.format, template, ...)

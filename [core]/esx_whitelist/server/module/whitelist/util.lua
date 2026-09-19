@@ -18,15 +18,27 @@ local VALID_TYPES <const> = {
     xbl = true,
     fivem = true
 }
+local IDENTIFIER_TYPES <const> = {
+    Enum.IdentifierType.LICENSE,
+    Enum.IdentifierType.LICENSE2,
+    Enum.IdentifierType.STEAM,
+    Enum.IdentifierType.DISCORD,
+    Enum.IdentifierType.XBL,
+    Enum.IdentifierType.FIVEM
+}
 
-local function isValidBotToken(token)
-    if type(token) ~= "string" or token == "" or #token < 50 then
+---@description Validates a Discord bot token format.
+---@param token string The bot token
+---@return boolean valid
+function Util.IsValidBotToken(token)
+    if type(token) ~= "string" or token == "" or #token < 50 or token:find("[%s%c]") then
         return false
     end
     if INVALID_TOKENS[token] then
         return false
     end
-    return token:find("%.") ~= nil
+    local prefix = token:match("^([^.%s]+)%.[^.%s]+%.[^.%s]+$")
+    return prefix ~= nil
 end
 
 local function stripWhitespace(value)
@@ -93,6 +105,9 @@ local function normalizeIdentifier(rawValue)
         if not VALID_TYPES[prefix] or not validateValue(prefix, value) then
             return nil, nil
         end
+        if prefix == Enum.IdentifierType.LICENSE or prefix == Enum.IdentifierType.LICENSE2 or prefix == Enum.IdentifierType.STEAM then
+            value = value:lower()
+        end
         return prefix, value
     end
 
@@ -100,38 +115,23 @@ local function normalizeIdentifier(rawValue)
     if not detected then
         return nil, nil
     end
+    if detected == Enum.IdentifierType.LICENSE or detected == Enum.IdentifierType.LICENSE2 or detected == Enum.IdentifierType.STEAM then
+        clean = clean:lower()
+    end
     return detected, clean
 end
 
 local function getPlayerIdentifiersFiltered(playerId)
     local identifiers = {}
-    local types = {
-        Enum.IdentifierType.LICENSE,
-        Enum.IdentifierType.LICENSE2,
-        Enum.IdentifierType.STEAM,
-        Enum.IdentifierType.DISCORD,
-        Enum.IdentifierType.XBL,
-        Enum.IdentifierType.FIVEM
-    }
-
-    for i = 1, #types do
-        local idType = types[i]
+    for i = 1, #IDENTIFIER_TYPES do
+        local idType = IDENTIFIER_TYPES[i]
         local value = GetPlayerIdentifierByType(playerId, idType)
         if value then
-            identifiers[#identifiers + 1] = idType .. ":" .. value
-        end
+			identifiers[#identifiers + 1] = value
+		end
     end
 
     return identifiers
-end
-
-local function buildIdentifierQuery(identifiers)
-    local conditions, params = {}, {}
-    for i = 1, #identifiers do
-        conditions[#conditions + 1] = "wi.identifier = ?"
-        params[#params + 1] = identifiers[i]
-    end
-    return table.concat(conditions, " OR "), params
 end
 
 local function loadLocale(localeName)
@@ -144,18 +144,29 @@ local function loadLocale(localeName)
 end
 
 local function translate(translations, key, ...)
+    if not translations then return key end
     local template = translations[key] or key
     if select("#", ...) == 0 then return template end
     local ok, result = pcall(string.format, template, ...)
     return ok and result or template
 end
 
-Util.IsValidBotToken = isValidBotToken
+---@description Detects the type of an identifier from a raw string.
 Util.DetectIdentifierType = detectIdentifierType
+---@description Normalizes a raw identifier string into type and value components.
 Util.NormalizeIdentifier = normalizeIdentifier
+---@description Gets filtered player identifiers by supported types.
+---@param playerId number The player source ID
+---@return string[] identifiers
 Util.GetPlayerIdentifiersFiltered = getPlayerIdentifiersFiltered
-Util.BuildIdentifierQuery = buildIdentifierQuery
+---@description Loads a locale file from the resources directory.
+---@param localeName string Locale file name
+---@return table translations
 Util.LoadLocale = loadLocale
+---@description Translates a locale key with optional format arguments.
+---@param translations table Locale string map
+---@param key string Translation key
+---@return string result
 Util.Translate = translate
 
 return Util

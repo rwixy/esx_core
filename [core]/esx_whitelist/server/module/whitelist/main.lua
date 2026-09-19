@@ -11,8 +11,9 @@ local Discord <const> = xLib.require "@esx_whitelist.server.module.whitelist.dis
 local Enum <const> = xLib.require "@esx_whitelist.server.module.whitelist.Enum"
 local Util <const> = xLib.require "@esx_whitelist.server.module.whitelist.util"
 
+---@class Whitelist
+---@description Main entry point for the ESX whitelist system.
 local Whitelist = {}
-local initialized = false
 
 local function applyStateChanged(enabled, manual, adminName)
     if manual then
@@ -50,7 +51,17 @@ local function reconcileOnline()
                 State.onlineSources[source] = true
                 Cache.SetIdentifiers(source, Util.GetPlayerIdentifiersFiltered(source))
                 State.onlinePlayerCount = State.onlinePlayerCount + 1
-                if Auth.IsAdmin(source) then State.onlineAdminCount = State.onlineAdminCount + 1 end
+                if Auth.IsAdmin(source) then
+                    State.onlineAdminCount = State.onlineAdminCount + 1
+                    Database.EnsureWhitelisted(
+                        GetPlayerName(source) or "Admin",
+                        Cache.GetIdentifiers(source),
+                        "system:admin",
+                        function(saved, _, whitelistId)
+                            if saved then TriggerClientEvent("esx_whitelist:entryChanged", -1, whitelistId) end
+                        end
+                    )
+                end
             end
         end
     end)
@@ -71,25 +82,46 @@ local function startMaintenance()
     end)
 end
 
+---@description Initializes the whitelist system: loads config, initializes database, refreshes cache, and starts maintenance threads.
 function Whitelist.Init()
-    if initialized then return end
-    initialized = true
+    if State.initializing then return end
+    State.initializing = true
     ConfigService.Load()
-    Database.Init(function()
-        Database.RefreshCache(function()
+    Database.Init(function(databaseOk)
+        if not databaseOk then
+            State.databaseReady = false
+            State.initializing = false
+            if Config.Debug then
+                print("^1[esx_whitelist] Database initialization failed. Whitelist connections will be rejected safely.^7")
+            end
+            return
+        end
+
+        Database.RefreshCache(function(cacheOk)
+            if not cacheOk then
+                State.databaseReady = false
+                State.initializing = false
+                if Config.Debug then
+                    print("^1[esx_whitelist] Whitelist cache initialization failed. Connections will be rejected safely.^7")
+                end
+                return
+            end
+
+            State.databaseReady = true
             Callbacks.Register(State.translations, applyStateChanged)
-            Commands.Register(function() end)
+            Commands.Register()
             reconcileOnline()
             startMaintenance()
-            print(("^2[esx_whitelist]^0 Initialized - %s - Grace: %ss"):format(State.config.enabled and "enabled" or "disabled", State.config.gracePeriod))
+            State.initializing = false
+            if Config.Debug then
+                print(("^2[esx_whitelist]^0 Initialized - %s - Grace: %ss"):format(State.config.enabled and "enabled" or "disabled", State.config.gracePeriod))
+            end
         end)
     end)
 end
 
-function Whitelist.OnPlayerConnecting(playerName, setKickReason, deferrals)
-    Connection.Verify(playerName, setKickReason, deferrals, State.translations)
-end
-
+---@description Handles player loaded event: tracks online state, identifiers, and triggers rule evaluation.
+---@param playerId number The player source ID
 function Whitelist.OnPlayerLoaded(playerId)
     local source = tonumber(playerId)
     if not source or source <= 0 or State.onlineSources[source] then return end
@@ -100,6 +132,9 @@ function Whitelist.OnPlayerLoaded(playerId)
     Rules.EvaluateAndApply(applyStateChanged)
 end
 
+---@description Handles player dropped event: cleans up identifiers, grace state, and triggers rule evaluation.
+---@param playerId number The player source ID
+---@param reason string Drop reason
 function Whitelist.OnPlayerDropped(playerId)
     local source = tonumber(playerId)
     if not source or source <= 0 then return end
@@ -114,6 +149,8 @@ function Whitelist.OnPlayerDropped(playerId)
     end
 end
 
+---@description Refreshes the in-memory whitelist cache from the database.
+---@param cb fun(success: boolean)
 function Whitelist.RefreshCache(cb)
     Database.RefreshCache(cb)
 end

@@ -1,38 +1,108 @@
 local State <const> = xLib.require "@esx_whitelist.server.module.whitelist.state"
+local Database <const> = xLib.require "@esx_whitelist.server.module.whitelist.database"
+local Util <const> = xLib.require "@esx_whitelist.server.module.whitelist.util"
+local ServerConfig <const> = xLib.require "@esx_whitelist.server.config.main"
 
+---@class Auth
+---@description Handles authorization checks including admin group membership, ACE permissions, and configured identifier allowlist.
 local Auth = {}
 local adminGroups = {}
-
-for i = 1, #Config.AdminGroups do
-    adminGroups[Config.AdminGroups[i]] = true
+for i = 1, #(Config.AdminGroups or {}) do
+    adminGroups[string.lower(tostring(Config.AdminGroups[i]))] = true
 end
 
+local configuredIdentifiers = {}
+for i = 1, #(ServerConfig.AllowedIdentifiers or {}) do
+    local idType, value = Util.NormalizeIdentifier(ServerConfig.AllowedIdentifiers[i])
+    if idType and value then configuredIdentifiers[idType .. ":" .. value] = true end
+end
+
+if Config.Debug then
+    print(("^3[esx_whitelist] Loaded %d configured identifier exceptions.^7"):format(#(ServerConfig.AllowedIdentifiers or {})))
+end
+
+local function aceAdmin(source)
+    source = tonumber(source)
+    if not source or source <= 0 then return false end
+    for i = 1, #(Config.AdminAcePermissions or {}) do
+        local permission = tostring(Config.AdminAcePermissions[i])
+        if permission ~= "" and IsPlayerAceAllowed(source, permission) then
+            return true
+        end
+    end
+    return false
+end
+
+---@description Checks if any of the player's identifiers match the configured allowlist.
+---@param identifiers string[] List of identifier strings
+---@return boolean hasMatch
+function Auth.HasConfiguredIdentifier(identifiers)
+    for i = 1, #(identifiers or {}) do
+        if configuredIdentifiers[identifiers[i]] then return true end
+    end
+    return false
+end
+
+---@description Checks if a player is an admin via ESX group or ACE permission.
+---@param source number The player source ID
+---@return boolean isAdmin
 function Auth.IsAdmin(source)
     local id = tonumber(source)
-    if not id or id <= 0 then return true end
-    if State.adminSources[id] ~= nil then return State.adminSources[id] end
+    if not id or id <= 0 then
+        State.adminSources[id] = nil
+        return false
+    end
 
     local xPlayer = ESX.GetPlayerFromId(id)
-    if not xPlayer then return false end
-    local group = xPlayer.getGroup()
-    local result = adminGroups[group] == true
+    local result = false
+    if xPlayer then
+        local group = xPlayer.getGroup and xPlayer.getGroup() or nil
+        result = group ~= nil and adminGroups[string.lower(tostring(group))] == true or false
+    end
+    if not result then result = aceAdmin(id) end
+
     State.adminSources[id] = result
     return result
 end
 
+---@description Asynchronously checks admin status, checking ESX group first then database.
+---@param source number The player source ID
+---@param identifiers string[] Player identifiers
+---@param callback fun(isAdmin: boolean, method?: string)
+---@param alreadyChecked boolean Skip ESX group check if true
+function Auth.IsAdminAsync(source, identifiers, callback, alreadyChecked)
+    source = tonumber(source)
+    if not source or source <= 0 then return callback(false) end
+    if not alreadyChecked and Auth.IsAdmin(source) then return callback(true, "ace_or_esx") end
+    if type(identifiers) ~= "table" or #identifiers == 0 then return callback(false) end
+
+    Database.FindAdminByIdentifiers(identifiers, adminGroups, function(isAdmin)
+        if isAdmin then
+            State.adminSources[source] = true
+            return callback(true, "database")
+        end
+        callback(false)
+    end)
+end
+
+---@description Sets the admin tracking state for a player.
+---@param source number The player source ID
+---@param value boolean Admin state
 function Auth.SetAdmin(source, value)
     source = tonumber(source)
     if not source or source <= 0 then return end
     State.adminSources[source] = value == true
 end
 
+---@description Clears admin tracking state for a player.
+---@param source number The player source ID
 function Auth.Clear(source)
     source = tonumber(source)
     if source then State.adminSources[source] = nil end
 end
 
-function Auth.Groups()
-    return Config.AdminGroups
-end
+---@description Returns the configured admin group list.
+---@return string[]
+function Auth.Groups() return Config.AdminGroups or {} end
 
 return Auth

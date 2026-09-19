@@ -1,11 +1,5 @@
 # Node modules
 node_modules/
 
-# Logs
-*.log
-
-# Config de entorno
-.env
-web/dist
-web/.next/
-whitelist_config.json
+# tmp config
+whitelist_config.json.tmp

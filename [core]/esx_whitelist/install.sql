@@ -14,8 +14,7 @@ CREATE TABLE IF NOT EXISTS `whitelist_identifiers` (
     `type` VARCHAR(32) NOT NULL,
     `identifier` VARCHAR(255) NOT NULL COLLATE utf8mb4_bin,
     PRIMARY KEY (`id`),
-    UNIQUE KEY `unique_identifier` (`type`, `identifier`),
-    KEY `idx_identifier` (`identifier`),
+    UNIQUE KEY `unique_identifier` (`identifier`),
     KEY `idx_whitelist_id` (`whitelist_id`),
     CONSTRAINT `fk_whitelist_identifiers_whitelist`
         FOREIGN KEY (`whitelist_id`) REFERENCES `whitelist` (`id`) ON DELETE CASCADE

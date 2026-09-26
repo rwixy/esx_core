@@ -6,8 +6,7 @@ fx_version 'adamant'
 game 'gta5'
 description 'A basic table-based menu system for ESX Legacy.'
 lua54 'yes'
-version '1.15.2'
-
+version '1.16.0'
 
 client_scripts {
 	'@es_extended/imports.lua',

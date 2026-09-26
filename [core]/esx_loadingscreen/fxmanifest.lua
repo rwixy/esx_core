@@ -8,7 +8,7 @@ lua54 "yes"
 fx_version 'cerulean'
 author 'ESX-Framework'
 description 'Allows resources to Run tasks at specific intervals.'
-version '1.15.2'
+version '1.16.0'
 lua54 'yes'
 
 loadscreen "web/index.html"

@@ -128,10 +128,13 @@ local function getPlayerIdentifiersFiltered(playerId)
     local identifiers = {}
     for i = 1, #IDENTIFIER_TYPES do
         local idType = IDENTIFIER_TYPES[i]
-        local value = GetPlayerIdentifierByType(playerId, idType)
-        if value then
-			identifiers[#identifiers + 1] = value
-		end
+        local raw = GetPlayerIdentifierByType(playerId, idType)
+        if raw then
+            local normalizedType, value = normalizeIdentifier(raw)
+            if normalizedType == idType and value then
+                identifiers[#identifiers + 1] = normalizedType .. ":" .. value
+            end
+        end
     end
 
     return identifiers

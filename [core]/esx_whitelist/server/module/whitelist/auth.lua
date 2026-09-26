@@ -50,7 +50,8 @@ end
 ---@return boolean isAdmin
 function Auth.IsAdmin(source)
     local id = tonumber(source)
-    if not id or id <= 0 then
+    if not id then return false end
+    if id <= 0 then
         State.adminSources[id] = nil
         return false
     end

@@ -8,11 +8,19 @@ local Util <const> = xLib.require "@esx_whitelist.server.module.whitelist.util"
 ---@description Provides database operations for whitelist entries and identifiers including CRUD, search, and cache refresh.
 local Database = {}
 local noop = function() end
+local IDENTITY_ANCHOR_TYPES <const> = { license = true, license2 = true }
+
+local function canonicalIdentifier(identifier)
+    if type(identifier) ~= "string" then return nil end
+    local idType, value = Util.NormalizeIdentifier(identifier)
+    if idType and value then return idType .. ":" .. value end
+    return identifier:lower()
+end
 
 local function validIdentifiers(identifiers)
     local result, seen = {}, {}
     for i = 1, #(identifiers or {}) do
-        local identifier = type(identifiers[i]) == "string" and identifiers[i]:lower() or nil
+        local identifier = canonicalIdentifier(identifiers[i])
         if identifier and identifier ~= "" and not seen[identifier] then
             local idType = identifier:match("^(%w+):")
             if idType then
@@ -116,7 +124,7 @@ function Database.RefreshCache(cb)
         local cache = {}
         for i = 1, #(rows or {}) do
             local id = tonumber(rows[i].id)
-            local identifier = rows[i].identifier
+            local identifier = canonicalIdentifier(rows[i].identifier)
             if id and type(identifier) == "string" then cache[identifier] = id end
         end
         Cache.ReplaceWhitelist(cache, generation)
@@ -130,7 +138,9 @@ end
 function Database.FindByIdentifier(identifier, cb)
     cb = cb or noop
     if type(identifier) ~= "string" or identifier == "" then return cb(nil) end
-    identifier = identifier:lower()
+    local normalizedIdentifier = canonicalIdentifier(identifier)
+    if not normalizedIdentifier then return cb(nil) end
+    identifier = normalizedIdentifier
 
     MySQL.query([[SELECT w.id, w.player_name, w.whitelisted
         FROM whitelist w
@@ -160,6 +170,25 @@ function Database.FindByIdentifiers(identifiers, cb)
         WHERE wi.identifier IN (%s)
         ORDER BY w.id ASC LIMIT 1]]):format(table.concat(placeholders, ",")), params, function(rows)
         cb(rows ~= false and rows[1] or nil)
+    end)
+end
+
+local function findIdentifierOwners(identifiers, cb)
+    local clean = validIdentifiers(identifiers)
+    if #clean == 0 then return cb({}) end
+
+    local placeholders, params = {}, {}
+    for i = 1, #clean do
+        placeholders[#placeholders + 1] = "?"
+        params[#params + 1] = clean[i].identifier
+    end
+
+    MySQL.query(([[SELECT w.id, w.player_name, w.whitelisted, wi.identifier
+        FROM whitelist w
+        INNER JOIN whitelist_identifiers wi ON wi.whitelist_id = w.id
+        WHERE wi.identifier IN (%s)
+        ORDER BY w.id ASC]]):format(table.concat(placeholders, ",")), params, function(rows)
+        cb(rows ~= false and (rows or {}) or nil)
     end)
 end
 
@@ -198,7 +227,11 @@ function Database.GetIdentifiers(whitelistId, cb)
     if not whitelistId then return cb({}) end
 
     MySQL.query("SELECT identifier FROM whitelist_identifiers WHERE whitelist_id = ? ORDER BY id ASC", { whitelistId }, function(rows)
-        cb(rows ~= false and rows or {})
+        rows = rows ~= false and rows or {}
+        for i = 1, #rows do
+            rows[i].identifier = canonicalIdentifier(rows[i].identifier)
+        end
+        cb(rows)
     end)
 end
 
@@ -219,7 +252,7 @@ end
 ---@param identifiers string[] Player identifiers
 ---@param whitelisted boolean Initial whitelist status
 ---@param addedBy string Who added the player
----@param cb fun(id: number?, error?: string)
+---@param cb fun(id: number?, error?: string, existing?: table)
 function Database.InsertPlayer(playerName, identifiers, whitelisted, addedBy, cb)
     cb = cb or noop
     local clean = validIdentifiers(identifiers)
@@ -239,8 +272,14 @@ function Database.InsertPlayer(playerName, identifiers, whitelisted, addedBy, cb
 
             MySQL.transaction(identifierInsertQueries(id, clean), function(success)
                 if not success then
-                    MySQL.update("DELETE FROM whitelist WHERE id = ?", { id })
-                    return cb(nil, "identifier_insert_failed")
+                    return MySQL.update("DELETE FROM whitelist WHERE id = ?", { id }, function()
+                        Database.FindByIdentifiers(identifiersOnly, function(racedEntry)
+                            if racedEntry then
+                                return cb(nil, "identifier_already_exists", racedEntry)
+                            end
+                            cb(nil, "identifier_insert_failed")
+                        end)
+                    end)
                 end
                 cb(id)
             end)
@@ -307,16 +346,77 @@ function Database.EnsureWhitelisted(playerName, identifiers, addedBy, cb, retryC
         end)
     end
 
-    Database.FindByIdentifiers(identifiersOnly, function(existingRow)
-        existing = existingRow
-        if not existing then
-            return Database.InsertPlayer(playerName, identifiersOnly, true, addedBy, function(id, err)
-                if id then return cacheAndFinish(id) end
-                if err == "identifier_already_exists" and retryCount < 2 then
-                    return Database.EnsureWhitelisted(playerName, identifiersOnly, addedBy, cb, retryCount + 1)
+    local hasStrongIdentifier = false
+    for i = 1, #clean do
+        if IDENTITY_ANCHOR_TYPES[clean[i].type] then
+            hasStrongIdentifier = true
+            break
+        end
+    end
+
+    local function insertNew(identifiersToInsert)
+        if #identifiersToInsert == 0 then return cb(false, "identity_conflict") end
+        cacheIdentifiers = identifiersToInsert
+        Database.InsertPlayer(playerName, identifiersToInsert, true, addedBy, function(id, err)
+            if id then return cacheAndFinish(id) end
+            if err == "identifier_already_exists" and retryCount < 2 then
+                return Database.EnsureWhitelisted(playerName, identifiersOnly, addedBy, cb, retryCount + 1)
+            end
+            cb(false, err or "insert_failed")
+        end)
+    end
+
+    findIdentifierOwners(identifiersOnly, function(ownerRows)
+        if not ownerRows then return cb(false, "identifier_lookup_failed") end
+
+        local owners, anchorOwners = {}, {}
+        for i = 1, #ownerRows do
+            local row = ownerRows[i]
+            local ownerId = tonumber(row.id)
+            if ownerId then
+                if not owners[ownerId] then owners[ownerId] = row end
+                local idType = type(row.identifier) == "string" and row.identifier:match("^(%w+):") or nil
+                if idType and IDENTITY_ANCHOR_TYPES[idType:lower()] then
+                    anchorOwners[ownerId] = true
                 end
-                cb(false, err or "insert_failed")
-            end)
+            end
+        end
+
+        local existingAnchorId, anchorCount
+        anchorCount = 0
+        for ownerId in pairs(anchorOwners) do
+            existingAnchorId = ownerId
+            anchorCount = anchorCount + 1
+        end
+        if anchorCount > 1 then return cb(false, "identity_anchor_conflict") end
+
+        local allowEnrichment = anchorCount == 1
+        if allowEnrichment then
+            existing = owners[existingAnchorId]
+        elseif not hasStrongIdentifier then
+            local ownerId, ownerCount
+            ownerCount = 0
+            for candidateId in pairs(owners) do
+                ownerId = candidateId
+                ownerCount = ownerCount + 1
+            end
+            if ownerCount > 1 then return cb(false, "ambiguous_identifiers") end
+            if ownerCount == 1 then existing = owners[ownerId] end
+        end
+
+        if not existing then
+            local unowned = {}
+            for i = 1, #identifiersOnly do
+                local owned = false
+                for j = 1, #ownerRows do
+                    if ownerRows[j].identifier == identifiersOnly[i] then
+                        owned = true
+                        break
+                    end
+                end
+                if not owned then unowned[#unowned + 1] = identifiersOnly[i] end
+            end
+            return insertNew(unowned)
         end
 
         local id = tonumber(existing.id)
@@ -331,10 +431,13 @@ function Database.EnsureWhitelisted(playerName, identifiers, addedBy, cb, retryC
                     knownIdentifiers[#knownIdentifiers + 1] = identifier
                 end
             end
+            cacheIdentifiers = knownIdentifiers
+
+            if not allowEnrichment then return enable(id) end
+
             for i = 1, #identifiersOnly do
                 if not known[identifiersOnly[i]] then missing[#missing + 1] = identifiersOnly[i] end
             end
-
             if #missing == 0 then return enable(id) end
 
             Database.FindConflicts(id, missing, function(conflicts)
@@ -346,12 +449,17 @@ function Database.EnsureWhitelisted(playerName, identifiers, addedBy, cb, retryC
                 end
 
                 Database.AddIdentifiers(id, safe, function(success)
-                    cacheIdentifiers = knownIdentifiers
-                    if success then
-                        for i = 1, #safe do
-                            knownIdentifiers[#knownIdentifiers + 1] = safe[i]
+                    if not success then
+                        if retryCount < 2 then
+                            return Database.EnsureWhitelisted(playerName, identifiersOnly, addedBy, cb, retryCount + 1)
                         end
+                        return cb(false, "identifier_insert_failed", id)
                     end
+
+                    for i = 1, #safe do
+                        knownIdentifiers[#knownIdentifiers + 1] = safe[i]
+                    end
+                    cacheIdentifiers = knownIdentifiers
                     enable(id)
                 end)
             end)
@@ -362,7 +470,7 @@ end
 ---@description Adds identifiers to an existing whitelist entry.
 ---@param id number The whitelist entry ID
 ---@param identifiers string[] Identifiers to add
----@param cb fun(success: boolean, error?: string)
+---@param cb fun(success: boolean, error?: string, conflicts?: table[])
 function Database.AddIdentifiers(id, identifiers, cb)
     cb = cb or noop
     id = tonumber(id)
@@ -478,7 +586,7 @@ function Database.Search(request, cb)
                 local id = tonumber(row.whitelist_id)
                 if id and type(row.identifier) == "string" then
                     if not identifiersById[id] then identifiersById[id] = {} end
-                    identifiersById[id][#identifiersById[id] + 1] = row.identifier
+                    identifiersById[id][#identifiersById[id] + 1] = canonicalIdentifier(row.identifier)
                 end
             end
 

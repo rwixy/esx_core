@@ -4,6 +4,7 @@
 local Whitelist <const> = xLib.require "@esx_whitelist.server.module.whitelist.main"
 local State <const> = xLib.require "@esx_whitelist.server.module.whitelist.state"
 local Connection <const> = xLib.require "@esx_whitelist.server.module.whitelist.connection"
+local Util <const> = xLib.require "@esx_whitelist.server.module.whitelist.util"
 
 AddEventHandler("onResourceStart", function(resourceName)
     if GetCurrentResourceName() == resourceName then
@@ -28,10 +29,25 @@ AddEventHandler("playerConnecting", function(playerName, setKickReason, deferral
         if Config.Debug then
             print("^1[esx_whitelist] Connection error:^7 " .. tostring(err))
         end
-        pcall(function()
-            deferrals.done("~r~" .. Util.Translate(State.translations, "system_error"))
+        local fallbackReason = "Whitelist authorization failed."
+        local translated, reason = pcall(Util.Translate, State.translations, "system_error")
+        if not translated or type(reason) ~= "string" then reason = fallbackReason end
+
+        local completed = pcall(function()
+            deferrals.done("~r~" .. reason)
         end)
+        if not completed and reason ~= fallbackReason then
+            pcall(function() deferrals.done("~r~" .. fallbackReason) end)
+        end
     end
+end)
+
+AddEventHandler("playerJoining", function(previousPlayerId)
+    Whitelist.OnPlayerJoining(source, previousPlayerId)
+end)
+
+AddEventHandler("playerDropped", function(reason)
+    Whitelist.OnPlayerDropped(source, reason)
 end)
 
 AddEventHandler("esx:playerLoaded", function(playerId, xPlayer)

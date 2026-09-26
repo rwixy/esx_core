@@ -14,6 +14,13 @@ local Connection = {}
 local GRACE_MIN <const>, GRACE_MAX <const> = 0, 600
 local KICK_CHUNK <const> = 25
 
+local function redactIdentifier(identifier)
+    local idType, value = tostring(identifier):match("^([^:]+):(.+)$")
+    if not idType then return "[redacted]" end
+    if #value <= 8 then return idType .. ":" .. string.rep("*", #value) end
+    return ("%s:%s...%s"):format(idType, value:sub(1, 4), value:sub(-4))
+end
+
 local function finish(deferrals, allow, reason)
     if allow then
         deferrals.done()
@@ -23,14 +30,50 @@ local function finish(deferrals, allow, reason)
 end
 
 local DATABASE_TIMEOUT <const> = 10000
+local databaseWaiters = {}
+local databaseWaitThreadRunning = false
+
+local function completeDatabaseWaiter(waiter, ready)
+    local ok, err = xpcall(function()
+        waiter.callback(ready)
+    end, debug.traceback)
+    if not ok and Config.Debug then
+        print("^1[esx_whitelist] Database readiness callback failed:^7 " .. tostring(err))
+    end
+end
 
 local function whenDatabaseReady(callback)
     if State.databaseReady then return callback(true) end
 
+    databaseWaiters[#databaseWaiters + 1] = {
+        callback = callback,
+        deadline = GetGameTimer() + DATABASE_TIMEOUT
+    }
+    if databaseWaitThreadRunning then return end
+
+    databaseWaitThreadRunning = true
     CreateThread(function()
-        local deadline = GetGameTimer() + DATABASE_TIMEOUT
-        while not State.databaseReady and GetGameTimer() < deadline do Wait(100) end
-        callback(State.databaseReady)
+        while #databaseWaiters > 0 do
+            Wait(100)
+
+            local waiters = databaseWaiters
+            databaseWaiters = {}
+            local now = GetGameTimer()
+            local ready = State.databaseReady
+
+            for i = 1, #waiters do
+                local waiter = waiters[i]
+                if ready then
+                    completeDatabaseWaiter(waiter, true)
+                elseif now >= waiter.deadline then
+                    completeDatabaseWaiter(waiter, false)
+                else
+                    databaseWaiters[#databaseWaiters + 1] = waiter
+                end
+            end
+        end
+
+        databaseWaitThreadRunning = false
     end)
 end
 
@@ -69,7 +112,7 @@ local function persistAccess(source, identifiers, addedBy, callback)
             addedBy,
             function(saved, err, whitelistId)
                 if saved and whitelistId then
-                    TriggerClientEvent("esx_whitelist:entryChanged", -1, whitelistId)
+                    TriggerEvent("esx_whitelist:notifyEntryChanged", whitelistId)
                 end
                 callback(saved == true, err, whitelistId)
             end
@@ -80,10 +123,6 @@ local function persistAccess(source, identifiers, addedBy, callback)
         if not ready then return callback(false, "database_unavailable") end
         persist()
     end)
-end
-
-local function persistAdmin(source, identifiers, callback)
-    persistAccess(source, identifiers, "system:admin", callback)
 end
 
 local function checkDiscord(source, callback)
@@ -102,15 +141,24 @@ end
 ---@description Authorizes a player connection by checking configured identifiers, admin status, Discord role, or database whitelist.
 ---@param source number The player source ID
 ---@param callback fun(allow: boolean, reason: string?)
-function Connection.Authorize(source, callback)
+---@param currentIdentifiers string[]? Identifiers captured for this connection attempt
+function Connection.Authorize(source, callback, currentIdentifiers)
     source = tonumber(source)
     if not source or source <= 0 then return callback(false, "invalid_source") end
+    if not State.config.enabled then return callback(true, "whitelist_disabled") end
 
-    local identifiers = Cache.GetIdentifiers(source)
-    if #identifiers == 0 then identifiers = identifiersFor(source) end
+    local identifiers = currentIdentifiers
+    if type(identifiers) ~= "table" then
+        identifiers = Cache.GetIdentifiers(source)
+        if #identifiers == 0 then identifiers = identifiersFor(source) end
+    end
 
     if Config.Debug then
-        local identifierList = #identifiers > 0 and table.concat(identifiers, ", ") or "none"
+        local redactedIdentifiers = {}
+        for i = 1, #identifiers do
+            redactedIdentifiers[i] = redactIdentifier(identifiers[i])
+        end
+        local identifierList = #redactedIdentifiers > 0 and table.concat(redactedIdentifiers, ", ") or "none"
         print(("^3[esx_whitelist] Authorization check for source %s: identifiers=[%s]^7"):format(source, identifierList))
     end
 
@@ -122,51 +170,30 @@ function Connection.Authorize(source, callback)
         return callback(true, "configured_identifier")
     end
 
-    local function checkAdmin(alreadyChecked)
-        Auth.IsAdminAsync(source, identifiers, function(isAdmin)
-            if isAdmin then
-                return persistAdmin(source, identifiers, function(saved, err, whitelistId)
-                    callback(saved == true, saved and "admin" or (err or "admin_persist_failed"))
+    local function checkWhitelist()
+        if State.config.authorizationMethod == "discord" then
+            return checkDiscord(source, function(hasRole, reason)
+                if not hasRole then
+                    return callback(false, reason or "not_whitelisted")
+                end
+
+                persistAccess(source, identifiers, "system:discord", function(saved, err)
+                    callback(saved, saved and "discord" or (err or "discord_persist_failed"))
                 end)
-            end
-
-            if not State.config.enabled then
-                return callback(false, "disabled")
-            end
-
-            if State.config.authorizationMethod == "discord" then
-                return checkDiscord(source, function(hasRole, reason)
-                    if not hasRole then
-                        return callback(false, reason or "not_whitelisted")
-                    end
-
-                    persistAccess(source, identifiers, "system:discord", function(saved, err)
-                        callback(saved, saved and "discord" or (err or "discord_persist_failed"))
-                    end)
-                end)
-            end
-
-            local function checkIdentifierWhitelist()
-                local whitelisted = Cache.IsWhitelisted(identifiers)
-                callback(whitelisted == true, whitelisted and "identifier" or "not_whitelisted")
-            end
-
-            if State.databaseReady then return checkIdentifierWhitelist() end
-
-            whenDatabaseReady(function(ready)
-                if not ready then return callback(false, "database_unavailable") end
-                checkIdentifierWhitelist()
             end)
-        end, alreadyChecked == true)
+        end
+
+        local whitelisted = Cache.IsWhitelisted(identifiers)
+        callback(whitelisted == true, whitelisted and "identifier" or "not_whitelisted")
     end
 
     local localAdmin = Auth.IsAdmin(source)
-    if localAdmin then return checkAdmin(true) end
-    if State.databaseReady then return checkAdmin(false) end
+    if localAdmin then return callback(true, "admin") end
+    if State.databaseReady then return checkWhitelist() end
 
     whenDatabaseReady(function(ready)
         if not ready then return callback(false, "database_unavailable") end
-        checkAdmin(false)
+        checkWhitelist()
     end)
 end
 
@@ -239,6 +266,7 @@ function Connection.Verify(playerSource, playerName, setKickReason, deferrals, t
         finishOnce(false, Util.Translate(translations, "kick_message"))
     end)
 
+    local identifiers = Util.GetPlayerIdentifiersFiltered(source)
     Connection.Authorize(source, function(allow, reason)
         if allow then
             State.gracePlayers[source] = nil
@@ -253,7 +281,7 @@ function Connection.Verify(playerSource, playerName, setKickReason, deferrals, t
         end
 
         finishOnce(false, Util.Translate(translations, "kick_message"))
-    end)
+    end, identifiers)
 end
 
 ---@description Forces enforcement of whitelist rules on a player (public alias for local enforce).

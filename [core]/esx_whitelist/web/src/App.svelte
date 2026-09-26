@@ -75,12 +75,14 @@
 
   let entries = $state<WhitelistEntry[]>(isBrowser ? demoEntries : [])
   let currentPage = $state(1)
+  let pageCursors = $state<(number | null)[]>([null])
+  let nextCursor = $state<number | null>(null)
+  let hasMoreEntries = $state(false)
   let pageSize = $state(50)
-  let totalEntries = $state(0)
-  let totalPages = $state(0)
   let isLoadingEntries = $state(false)
   let entriesRequest = 0
   let searchTimer: ReturnType<typeof setTimeout> | null = null
+  let entryRefreshTimer: ReturnType<typeof setTimeout> | null = null
   let newIdentifier = $state('')
   let newAction = $state<'add' | 'remove'>('add')
   let isSaving = $state(false)
@@ -122,36 +124,36 @@
     if (isBrowser) {
       if (action === 'getWhitelistEntries') {
         const payload = data as {
-            page?: number
+          cursor?: number | null
             limit?: number
             search?: string
         }
-      
-        const page = Math.max(1, payload.page ?? 1)
+
+        const cursor = payload.cursor ?? null
         const limit = Math.max(1, payload.limit ?? 50)
         const search = (payload.search ?? '').trim().toLowerCase()
-      
+
         const filtered = demoEntries.filter((entry) => {
             if (!search) return true
-        
-            return (
-                entry.playerName.toLowerCase().includes(search) ||
-                entry.identifiers.some((id) =>
-                    id.toLowerCase().includes(search)
-                )
-            )
+
+          if (/^[a-z0-9_]+:/.test(search)) {
+            return entry.identifiers.some((id) => id.toLowerCase().startsWith(search))
+          }
+          return entry.playerName.toLowerCase().startsWith(search)
         })
-      
-        const total = filtered.length
-        const totalPages = Math.max(1, Math.ceil(total / limit))
-        const start = (page - 1) * limit
-      
+
+        const available = filtered
+          .filter((entry) => cursor === null || entry.id < cursor)
+          .sort((first, second) => second.id - first.id)
+        const pageEntries = available.slice(0, limit)
+        const hasMore = available.length > limit
+
         return {
-            entries: filtered.slice(start, start + limit),
-            page,
+          entries: pageEntries,
+          cursor,
+          nextCursor: hasMore ? pageEntries[pageEntries.length - 1]?.id ?? null : null,
+          hasMore,
             limit,
-            total,
-            totalPages
         } as unknown as T
       }
       if (action === 'updateConfig') {
@@ -197,6 +199,7 @@
 
   function closeUI() {
     sounds.playClick()
+    cancelEntryRefresh()
     visible = false
     postNui('closeUI')
   }
@@ -223,19 +226,20 @@
     }
   }
 
-  async function loadEntries(page = currentPage, search = searchQuery) {
+  async function loadEntries(cursor = pageCursors[currentPage - 1] ?? null, search = searchQuery, page = currentPage) {
+    cancelEntryRefresh()
     const requestId = ++entriesRequest
     isLoadingEntries = true
 
     try {
       const result = await postNui<{
         entries: WhitelistEntry[]
-        page: number
+        cursor: number | null
+        nextCursor: number | null
+        hasMore: boolean
         limit: number
-        total: number
-        totalPages: number
       }>('getWhitelistEntries', {
-        page,
+        cursor,
         limit: pageSize,
         search: search.trim()
       })
@@ -243,12 +247,40 @@
       if (!result || requestId !== entriesRequest) return
 
       entries = normalizeEntries(result.entries ?? [])
-      currentPage = result.page ?? page
-      totalEntries = result.total ?? 0
-      totalPages = result.totalPages ?? 0
+      currentPage = page
+      pageCursors[page - 1] = cursor
+      nextCursor = result.nextCursor ?? null
+      hasMoreEntries = result.hasMore === true
     } finally {
       if (requestId === entriesRequest) isLoadingEntries = false
     }
+  }
+
+  function cancelEntryRefresh() {
+    if (entryRefreshTimer === null) return
+    clearTimeout(entryRefreshTimer)
+    entryRefreshTimer = null
+  }
+
+  function scheduleEntryRefresh() {
+    if (entryRefreshTimer !== null) return
+    entryRefreshTimer = setTimeout(() => {
+      entryRefreshTimer = null
+      if (visible) loadEntries()
+    }, 500)
+  }
+
+  function loadPreviousPage() {
+    if (currentPage <= 1 || isLoadingEntries) return
+    const page = currentPage - 1
+    loadEntries(pageCursors[page - 1] ?? null, searchQuery, page)
+  }
+
+  function loadNextPage() {
+    if (!hasMoreEntries || nextCursor === null || isLoadingEntries) return
+    const page = currentPage + 1
+    pageCursors = [...pageCursors.slice(0, currentPage), nextCursor]
+    loadEntries(nextCursor, searchQuery, page)
   }
 
   async function handleManagePlayer() {
@@ -330,7 +362,8 @@
 
     searchTimer = setTimeout(() => {
         currentPage = 1
-        loadEntries(1, searchQuery)
+      pageCursors = [null]
+      loadEntries(null, searchQuery, 1)
     }, 250)
   }
 
@@ -349,11 +382,12 @@
         visible = true
         loadEntries()
       } else if (item.action === 'closeUI') {
+        cancelEntryRefresh()
         visible = false
       } else if (item.action === 'whitelistStateChanged' && item.data) {
         config = { ...config, ...item.data }
       } else if (item.action === 'whitelistEntryChanged' && visible) {
-        loadEntries()
+        scheduleEntryRefresh()
       }
     }
 
@@ -367,6 +401,7 @@
     window.addEventListener('keydown', handleKeyDown)
 
     return () => {
+      cancelEntryRefresh()
       window.removeEventListener('message', handleMessage)
       window.removeEventListener('keydown', handleKeyDown)
     }
@@ -389,7 +424,7 @@
       <div class="header-right">
         <div class="status-indicator">
           <span class="status-dot" class:active={config.whitelistEnabled}></span>
-          <span class="status-text">{config.whitelistEnabled ? 'SYSTEM ACTIVE' : 'SYSTEM INACTIVE'}</span>
+          <span class="status-text">{config.whitelistEnabled ? 'WHITELIST ON' : 'WHITELIST OFF'}</span>
         </div>
         <button class="btn btn-ghost close-btn" onclick={closeUI} title="Close (ESC)">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -429,10 +464,10 @@
       <button
         class="tab-btn"
         class:active={activeTab === 'list'}
-        onclick={() => { activeTab = 'list'; currentPage = 1; loadEntries(1); sounds.playClick() }}
+        onclick={() => { activeTab = 'list'; currentPage = 1; pageCursors = [null]; loadEntries(null, searchQuery, 1); sounds.playClick() }}
       >
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
-        Database ({totalEntries})
+        Database
       </button>
     </nav>
 
@@ -448,7 +483,7 @@
             <div class="setting-row">
               <div class="setting-info">
                 <span class="setting-label">Enforce Whitelist</span>
-                <p class="setting-hint">When active, only verified players can join</p>
+                <p class="setting-hint">When off, normal players can join without whitelist checks</p>
               </div>
               <label class="switch" for="master-toggle">
                 <input
@@ -505,7 +540,7 @@
                 <option value="identifier">Identifier database</option>
                 <option value="discord">Discord role</option>
               </select>
-              <p class="setting-hint">Players must pass the selected method. Administrators are always added to the identifier database.</p>
+              <p class="setting-hint">When enabled, normal players must pass the selected method; ESX/ACE administrators are exempt.</p>
             </div>
 
             <div class="input-group">
@@ -734,7 +769,7 @@
                 bind:value={searchQuery} oninput={handleSearchInput}
               />
             </div>
-            <button class="btn btn-secondary" onclick={() => loadEntries(currentPage, searchQuery)}>Refresh List</button>
+            <button class="btn btn-secondary" onclick={() => loadEntries()}>Refresh List</button>
           </div>
 
           <div class="table-wrap">
@@ -804,7 +839,7 @@
             <button
                 class="btn btn-secondary pagination-btn"
                 disabled={currentPage <= 1 || isLoadingEntries}
-                onclick={() => loadEntries(currentPage - 1)}
+                onclick={loadPreviousPage}
                 aria-label="Previous page"
                 title="Previous page"
             >
@@ -812,14 +847,13 @@
             </button>
           
             <span>
-                Page {currentPage} of {Math.max(totalPages, 1)}
-                · {totalEntries} records
+                Page {currentPage} · {entries.length} records
             </span>
           
             <button
                 class="btn btn-secondary pagination-btn"
-                disabled={currentPage >= totalPages || isLoadingEntries}
-                onclick={() => loadEntries(currentPage + 1)}
+                disabled={!hasMoreEntries || isLoadingEntries}
+                onclick={loadNextPage}
                 aria-label="Next page"
                 title="Next page"
             >

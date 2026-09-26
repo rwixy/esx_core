@@ -2,34 +2,12 @@
 -- Copyright (C) 2022-2026 ESX Framework
 
 local Cache <const> = xLib.require "@esx_whitelist.server.module.whitelist.cache"
+local Util <const> = xLib.require "@esx_whitelist.server.module.whitelist.util"
 
 ---@class Database
 ---@description Provides database operations for whitelist entries and identifiers including CRUD, search, and cache refresh.
 local Database = {}
 local noop = function() end
-
-local CREATE_WHITELIST <const> = [[
-CREATE TABLE IF NOT EXISTS `whitelist` (
-    `id` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    `player_name` VARCHAR(255) COLLATE utf8mb4_unicode_ci,
-    `whitelisted` TINYINT(1) NOT NULL DEFAULT 0,
-    `added_by` VARCHAR(255) COLLATE utf8mb4_unicode_ci,
-    `added_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    INDEX `idx_whitelisted_id` (`whitelisted`, `id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-]]
-
-local CREATE_IDENTIFIERS <const> = [[
-CREATE TABLE IF NOT EXISTS `whitelist_identifiers` (
-    `id` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    `whitelist_id` INT UNSIGNED NOT NULL,
-    `type` VARCHAR(32) NOT NULL,
-    `identifier` VARCHAR(255) NOT NULL COLLATE utf8mb4_bin,
-    FOREIGN KEY (`whitelist_id`) REFERENCES `whitelist`(`id`) ON DELETE CASCADE,
-    UNIQUE KEY `unique_identifier` (`identifier`),
-    INDEX `idx_whitelist_id` (`whitelist_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-]]
 
 local function validIdentifiers(identifiers)
     local result, seen = {}, {}
@@ -68,28 +46,60 @@ local function normalizeWhitelisted(value)
     return tonumber(value) == 1 and 1 or 0
 end
 
+local function ensurePlayerNameIndex(callback)
+    MySQL.query("SHOW INDEX FROM `whitelist` WHERE `Key_name` = 'idx_whitelist_name_id'", {}, function(rows)
+        if rows ~= false and #(rows or {}) > 0 then return callback() end
+
+        MySQL.query("ALTER TABLE `whitelist` ADD INDEX `idx_whitelist_name_id` (`player_name`(180), `id`)", {}, function(result)
+            if result == false and Config.Debug then
+                print("^3[esx_whitelist] Could not add the optional player-name search index.^7")
+            end
+            callback()
+        end)
+    end)
+end
+
+local function escapeLikePrefix(value)
+    return (value:gsub("[=%%_]", function(character)
+        return "=" .. character
+    end)) .. "%"
+end
+
 ---@description Initializes database tables if they do not exist.
 ---@param cb fun(success: boolean)
 function Database.Init(cb)
     cb = cb or noop
-    MySQL.query(CREATE_WHITELIST, {}, function(result1)
-        if result1 == false then
-            if Config.Debug then
-                print("^1[esx_whitelist] Failed to create/check whitelist table.^7")
-            end
-            return cb(false)
+    local schema = LoadResourceFile(GetCurrentResourceName(), "install.sql")
+    if type(schema) ~= "string" then
+        if Config.Debug then
+            print("^1[esx_whitelist] Failed to load install.sql.^7")
+        end
+        return cb(false)
+    end
+
+    local statements = {}
+    for statement in schema:gmatch("(.-);") do
+        if statement:match("%S") then statements[#statements + 1] = statement end
+    end
+    if #statements == 0 then return cb(false) end
+
+    local function runStatement(index)
+        if index > #statements then
+            return ensurePlayerNameIndex(function() cb(true) end)
         end
 
-        MySQL.query(CREATE_IDENTIFIERS, {}, function(result2)
-            if result2 == false then
+        MySQL.query(statements[index], {}, function(result)
+            if result == false then
                 if Config.Debug then
-                    print("^1[esx_whitelist] Failed to create/check whitelist_identifiers table.^7")
+                    print(("^1[esx_whitelist] Failed to execute install.sql statement %d.^7"):format(index))
                 end
                 return cb(false)
             end
-            cb(true)
+            runStatement(index + 1)
         end)
-    end)
+    end
+
+    runStatement(1)
 end
 
 ---@description Refreshes the in-memory whitelist cache from the database.
@@ -380,134 +390,115 @@ function Database.AddIdentifiers(id, identifiers, cb)
     end)
 end
 
----@description Searches whitelist entries with pagination and filtering.
+---@description Searches whitelist entries with keyset pagination and indexed prefix filters.
 ---@param request table Search parameters
----@param cb fun(result: {entries: table[], page: number, limit: number, total: number, totalPages: number})
+---@param cb fun(result: {entries: table[], cursor: number?, nextCursor: number?, hasMore: boolean, limit: number})
 function Database.Search(request, cb)
     cb = cb or noop
     request = type(request) == "table" and request or {}
-    local page = math.max(1, math.min(100000, math.floor(tonumber(request.page) or 1)))
     local limit = math.min(100, math.max(10, math.floor(tonumber(request.limit) or 50)))
     local search = type(request.search) == "string" and request.search:sub(1, 100) or ""
     local status = tonumber(request.status)
-    local where, params = {}, {}
+    local cursor = tonumber(request.cursor)
+    if cursor then cursor = math.floor(cursor) end
+    if not cursor or cursor <= 0 then cursor = nil end
 
-    if search ~= "" then
-        where[#where + 1] = "(w.player_name LIKE ? OR wi.identifier LIKE ?)"
-        local pattern = "%" .. search .. "%"
-        params[#params + 1] = pattern
-        params[#params + 1] = pattern
+    local where, params = {}, {}
+    local join = ""
+    local idType, idValue = Util.NormalizeIdentifier(search)
+    local exactIdentifier = idType and idValue and (idType .. ":" .. idValue) or nil
+
+    if exactIdentifier then
+        join = " INNER JOIN `whitelist_identifiers` wi ON wi.whitelist_id = w.id"
+        where[#where + 1] = "wi.identifier = ?"
+        params[#params + 1] = exactIdentifier
+    elseif search ~= "" and search:match("^%w+:") then
+        where[#where + 1] = [[EXISTS (
+            SELECT 1 FROM `whitelist_identifiers` wi
+            WHERE wi.whitelist_id = w.id AND wi.identifier LIKE ? ESCAPE '='
+        )]]
+        params[#params + 1] = escapeLikePrefix(search:lower())
+    elseif search ~= "" then
+        where[#where + 1] = "w.player_name LIKE ? ESCAPE '='"
+        params[#params + 1] = escapeLikePrefix(search)
     end
+
     if status == 0 or status == 1 then
         where[#where + 1] = "w.whitelisted = ?"
         params[#params + 1] = status
     end
+    if cursor then
+        where[#where + 1] = "w.id < ?"
+        params[#params + 1] = cursor
+    end
 
     local clause = #where > 0 and (" WHERE " .. table.concat(where, " AND ")) or ""
-    MySQL.query(([[SELECT COUNT(DISTINCT w.id) AS total
-        FROM whitelist w
-        LEFT JOIN whitelist_identifiers wi ON wi.whitelist_id = w.id%s]]):format(clause), params, function(countRows)
-        if countRows == false then return cb({ entries = {}, page = page, limit = limit, total = 0, totalPages = 1 }) end
+    local pageParams = {}
+    for i = 1, #params do pageParams[#pageParams + 1] = params[i] end
+    pageParams[#pageParams + 1] = limit + 1
 
-        local total = tonumber(countRows[1] and countRows[1].total) or 0
-        local totalPages = math.max(1, math.ceil(total / limit))
-        if page > totalPages then page = totalPages end
-        local offset = (page - 1) * limit
+    MySQL.query(([[SELECT w.id, w.player_name, w.whitelisted
+        FROM `whitelist` w%s%s
+        ORDER BY w.id DESC
+        LIMIT ?]]):format(join, clause), pageParams, function(rows)
+        if rows == false then
+            return cb({ entries = {}, cursor = cursor, nextCursor = nil, hasMore = false, limit = limit })
+        end
 
-        local pageParams = {}
-        for i = 1, #params do pageParams[#pageParams + 1] = params[i] end
-        pageParams[#pageParams + 1] = limit
-        pageParams[#pageParams + 1] = offset
+        local hasMore = #rows > limit
+        if hasMore then rows[#rows] = nil end
+        if #rows == 0 then
+            return cb({ entries = {}, cursor = cursor, nextCursor = nil, hasMore = false, limit = limit })
+        end
 
-        MySQL.query(([[SELECT DISTINCT w.id, w.player_name, w.whitelisted
-            FROM whitelist w
-            LEFT JOIN whitelist_identifiers wi ON wi.whitelist_id = w.id%s
-            ORDER BY w.id DESC
-            LIMIT ? OFFSET ?]]):format(clause), pageParams, function(rows)
-            if rows == false then return cb({ entries = {}, page = page, limit = limit, total = total, totalPages = totalPages }) end
-            if #rows == 0 then return cb({ entries = {}, page = page, limit = limit, total = total, totalPages = totalPages }) end
+        local ids, entriesById = {}, {}
+        for i = 1, #rows do
+            local row = rows[i]
+            local id = tonumber(row.id)
+            if id then
+                ids[#ids + 1] = id
+                entriesById[id] = {
+                    id = id,
+                    playerName = row.player_name or "Unknown",
+                    whitelisted = normalizeWhitelisted(row.whitelisted),
+                    identifiers = {}
+                }
+            end
+        end
 
-            local ids, entriesById = {}, {}
-            for i = 1, #rows do
-                local row = rows[i]
-                local id = tonumber(row.id)
-                if id then
-                    ids[#ids + 1] = id
-                    entriesById[id] = {
-                        id = id,
-                        playerName = row.player_name or "Unknown",
-                        whitelisted = normalizeWhitelisted(row.whitelisted),
-                        identifiers = {}
-                    }
+        local identifierParams = {}
+        for i = 1, #ids do identifierParams[#identifierParams + 1] = ids[i] end
+        MySQL.query(([[SELECT whitelist_id, identifier
+            FROM whitelist_identifiers
+            WHERE whitelist_id IN (%s)
+            ORDER BY whitelist_id, id ASC]]):format(table.concat(identifierParams, ",")), identifierParams, function(identifierRows)
+            local identifiersById = {}
+            for i = 1, #(identifierRows or {}) do
+                local row = identifierRows[i]
+                local id = tonumber(row.whitelist_id)
+                if id and type(row.identifier) == "string" then
+                    if not identifiersById[id] then identifiersById[id] = {} end
+                    identifiersById[id][#identifiersById[id] + 1] = row.identifier
                 end
             end
 
-            local identifierParams = {}
-            for i = 1, #ids do identifierParams[#identifierParams + 1] = ids[i] end
-            MySQL.query(([[SELECT whitelist_id, identifier
-                FROM whitelist_identifiers
-                WHERE whitelist_id IN (%s)
-                ORDER BY whitelist_id, id ASC]]):format(table.concat(identifierParams, ",")), identifierParams, function(identifierRows)
-                local identifiersById = {}
-                for i = 1, #(identifierRows or {}) do
-                    local row = identifierRows[i]
-                    local id = tonumber(row.whitelist_id)
-                    if id and type(row.identifier) == "string" then
-                        if not identifiersById[id] then identifiersById[id] = {} end
-                        identifiersById[id][#identifiersById[id] + 1] = row.identifier
-                    end
+            local entries = {}
+            for i = 1, #ids do
+                local entry = entriesById[ids[i]]
+                if entry then
+                    entry.identifiers = identifiersById[ids[i]] or {}
+                    entries[#entries + 1] = entry
                 end
-
-                local entries = {}
-                for i = 1, #ids do
-                    local entry = entriesById[ids[i]]
-                    if entry then
-                        entry.identifiers = identifiersById[ids[i]] or {}
-                        entries[#entries + 1] = entry
-                    end
-                end
-                cb({ entries = entries, page = page, limit = limit, total = total, totalPages = totalPages })
-            end)
+            end
+            cb({
+                entries = entries,
+                cursor = cursor,
+                nextCursor = hasMore and entries[#entries].id or nil,
+                hasMore = hasMore,
+                limit = limit
+            })
         end)
     end)
-end
-
----@description Checks if identifiers belong to any admin user.
----@param identifiers string[] Player identifiers
----@param adminGroups table Admin group names
----@param cb fun(isAdmin: boolean)
-function Database.FindAdminByIdentifiers(identifiers, adminGroups, cb)
-    cb = cb or noop
-    local clean = validIdentifiers(identifiers)
-    if #clean == 0 or #clean > 32 then return cb(false) end
-
-    local placeholders, params = {}, {}
-    for i = 1, #clean do
-        placeholders[#placeholders + 1] = "?"
-        params[#params + 1] = clean[i].identifier
-    end
-
-    local groups, seenGroups = {}, {}
-    for group in pairs(adminGroups or {}) do
-        group = string.lower(tostring(group))
-        if not seenGroups[group] then
-            seenGroups[group] = true
-            groups[#groups + 1] = group
-        end
-    end
-    if #groups == 0 then return cb(false) end
-
-    local groupPlaceholders = {}
-    for i = 1, #groups do
-        groupPlaceholders[#groupPlaceholders + 1] = "?"
-        params[#params + 1] = groups[i]
-    end
-
-    local query = ([[SELECT 1 AS is_admin FROM users WHERE identifier IN (%s) AND LOWER(`group`) IN (%s) LIMIT 1]]):format(
-        table.concat(placeholders, ","),
-        table.concat(groupPlaceholders, ",")
-    )
-    MySQL.query(query, params, function(rows) cb(rows ~= false and rows[1] ~= nil) end)
 end
 
 return Database

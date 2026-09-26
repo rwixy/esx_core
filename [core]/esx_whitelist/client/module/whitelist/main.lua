@@ -6,6 +6,7 @@ local Util <const> = xLib.require "@esx_whitelist.client.module.whitelist.util"
 
 local Service = {}
 local ui = Class.WhitelistUI.new()
+local updatesSubscribed = false
 local theme = {
     primaryColor = GetConvar("esx:ui:primaryColor", "#FB9B04"),
     secondaryColor = GetConvar("esx:ui:secondaryColor", "#252525"),
@@ -22,6 +23,12 @@ local function sendUiMessage(action, data)
     if ui.isVisible then SendNUIMessage({ action = action, data = data }) end
 end
 
+local function setUpdatesSubscribed(subscribed)
+    if updatesSubscribed == subscribed then return end
+    updatesSubscribed = subscribed
+    TriggerServerEvent(subscribed and "esx_whitelist:subscribeUpdates" or "esx_whitelist:unsubscribeUpdates")
+end
+
 local function openUI()
     if ui.isVisible then return end
     triggerServerCallback("esx_whitelist:getConfig", nil, function(config)
@@ -31,6 +38,7 @@ local function openUI()
         end
         config.theme = theme
         ui:toggle(true, config)
+        setUpdatesSubscribed(true)
     end)
 end
 
@@ -47,7 +55,11 @@ local function registerEvents()
 end
 
 local function registerNui()
-    RegisterNUICallback("closeUI", function(_, cb) ui:toggle(false); cb("ok") end)
+    RegisterNUICallback("closeUI", function(_, cb)
+        setUpdatesSubscribed(false)
+        ui:toggle(false)
+        cb("ok")
+    end)
     RegisterNUICallback("getConfig", function(_, cb)
         triggerServerCallback("esx_whitelist:getConfig", nil, function(config)
             if config then config.theme = theme end
@@ -66,12 +78,12 @@ local function registerNui()
     RegisterNUICallback("getWhitelistEntries", function(data, cb)
         data = type(data) == "table" and data or {}
         triggerServerCallback("esx_whitelist:getWhitelistEntries", {
-            page = tonumber(data.page) or 1,
+            cursor = tonumber(data.cursor),
             limit = tonumber(data.limit) or 50,
             search = type(data.search) == "string" and data.search or "",
             status = tonumber(data.status)
         }, function(result)
-            cb(result or { entries = {}, page = 1, limit = 50, total = 0, totalPages = 0 })
+            cb(result or { entries = {}, cursor = nil, nextCursor = nil, hasMore = false, limit = 50 })
         end)
     end)
     RegisterNUICallback("managePlayer", function(data, cb)
@@ -87,6 +99,12 @@ end
 function Service.Init()
     registerEvents()
     registerNui()
+
+    AddEventHandler("onResourceStop", function(resourceName)
+        if GetCurrentResourceName() == resourceName then
+            setUpdatesSubscribed(false)
+        end
+    end)
 
     RegisterCommand(Config.UICommand, function()
         openUI()

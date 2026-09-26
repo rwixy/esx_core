@@ -5,7 +5,7 @@
 Config = {}
 
 Config.Locale = "en"
-Config.Debug = true
+Config.Debug = false
 Config.UICommand = "whitelist"
 
 Config.AdminGroups = {
@@ -18,6 +18,10 @@ Config.AdminGroups = {
 Config.AdminAcePermissions = {
     "esx_whitelist.admin"
 }
+
+Config.DiscordMaxConcurrentRequests = 8
+Config.DiscordMaxQueuedRequests = 2048
+Config.DiscordRequestIntervalMs = 25
 
 Config.InGameCommands = true
 

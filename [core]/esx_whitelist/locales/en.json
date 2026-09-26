@@ -104,6 +104,8 @@
     "failed_to_save_state": "Failed to save whitelist state",
     "whitelist_already_enabled": "Whitelist is already enabled",
     "whitelist_already_disabled": "Whitelist is already disabled",
+    "whitelist_enabled_notification": "Whitelist enabled",
+    "whitelist_disabled_notification": "Whitelist disabled; normal players can now connect",
     "cache_synced": "Whitelist cache synchronized with database",
     "cache_sync_failed": "Failed to synchronize whitelist cache",
     "identifier_conflict": "One or more identifiers already belong to another whitelist entry",

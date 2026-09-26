@@ -2,7 +2,6 @@
 -- Copyright (C) 2022-2026 ESX Framework
 
 local State <const> = xLib.require "@esx_whitelist.server.module.whitelist.state"
-local Database <const> = xLib.require "@esx_whitelist.server.module.whitelist.database"
 local Util <const> = xLib.require "@esx_whitelist.server.module.whitelist.util"
 local ServerConfig <const> = xLib.require "@esx_whitelist.server.config.main"
 
@@ -66,35 +65,6 @@ function Auth.IsAdmin(source)
 
     State.adminSources[id] = result
     return result
-end
-
----@description Asynchronously checks admin status, checking ESX group first then database.
----@param source number The player source ID
----@param identifiers string[] Player identifiers
----@param callback fun(isAdmin: boolean, method?: string)
----@param alreadyChecked boolean Skip ESX group check if true
-function Auth.IsAdminAsync(source, identifiers, callback, alreadyChecked)
-    source = tonumber(source)
-    if not source or source <= 0 then return callback(false) end
-    if not alreadyChecked and Auth.IsAdmin(source) then return callback(true, "ace_or_esx") end
-    if type(identifiers) ~= "table" or #identifiers == 0 then return callback(false) end
-
-    Database.FindAdminByIdentifiers(identifiers, adminGroups, function(isAdmin)
-        if isAdmin then
-            State.adminSources[source] = true
-            return callback(true, "database")
-        end
-        callback(false)
-    end)
-end
-
----@description Sets the admin tracking state for a player.
----@param source number The player source ID
----@param value boolean Admin state
-function Auth.SetAdmin(source, value)
-    source = tonumber(source)
-    if not source or source <= 0 then return end
-    State.adminSources[source] = value == true
 end
 
 ---@description Clears admin tracking state for a player.

@@ -20,15 +20,6 @@ function Cache.BeginWhitelistRefresh()
     return whitelistGeneration
 end
 
----@description Sets a single whitelist identifier to a whitelist ID.
----@param identifier string The identifier string
----@param id number The whitelist database ID
-function Cache.SetWhitelist(identifier, id)
-    if not identifier or not id then return end
-    bumpWhitelistGeneration()
-    State.whitelistCache[identifier] = id
-end
-
 ---@description Sets multiple whitelist identifiers to the same whitelist ID.
 ---@param identifiers string[] List of identifier strings
 ---@param id number The whitelist database ID
@@ -38,14 +29,6 @@ function Cache.SetWhitelistBatch(identifiers, id)
     for i = 1, #(identifiers or {}) do
         State.whitelistCache[identifiers[i]] = id
     end
-end
-
----@description Removes a whitelist identifier mapping.
----@param identifier string The identifier string
-function Cache.RemoveWhitelist(identifier)
-    if not identifier then return end
-    bumpWhitelistGeneration()
-    State.whitelistCache[identifier] = nil
 end
 
 ---@description Removes multiple whitelist identifier mappings.

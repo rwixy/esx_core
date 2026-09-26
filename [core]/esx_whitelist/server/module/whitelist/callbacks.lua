@@ -15,6 +15,29 @@ local Connection <const> = xLib.require "@esx_whitelist.server.module.whitelist.
 ---@class Callbacks
 ---@description NUI server callbacks for the whitelist admin panel (getConfig, getWhitelistEntries, updateConfig, etc.).
 local Callbacks = {}
+local uiSubscribers = {}
+local RULE_FIELDS <const> = { "id", "type", "enabled", "priority", "operator", "value", "action", "startTime", "endTime" }
+
+local function sameRules(first, second)
+    if #(first or {}) ~= #(second or {}) then return false end
+    for i = 1, #(first or {}) do
+        for j = 1, #RULE_FIELDS do
+            local field = RULE_FIELDS[j]
+            if first[i][field] ~= second[i][field] then return false end
+        end
+    end
+    return true
+end
+
+local function authorizationConfigChanged(previous, current)
+    return previous.enabled ~= current.enabled
+        or previous.kickConnected ~= current.kickConnected
+        or previous.authorizationMethod ~= current.authorizationMethod
+        or previous.discordEnabled ~= current.discordEnabled
+        or previous.discordGuildId ~= current.discordGuildId
+        or previous.discordRoleId ~= current.discordRoleId
+        or not sameRules(previous.rules, current.rules)
+end
 
 local function allowed(source)
     source = tonumber(source)
@@ -42,6 +65,31 @@ local function getAllIdentifiers(identifier, cb)
 end
 
 function Callbacks.Register(translations, onStateChanged)
+    RegisterNetEvent("esx_whitelist:subscribeUpdates", function()
+        local subscriber = tonumber(source)
+        if subscriber and allowed(subscriber) then uiSubscribers[subscriber] = true end
+    end)
+
+    RegisterNetEvent("esx_whitelist:unsubscribeUpdates", function()
+        local subscriber = tonumber(source)
+        if subscriber then uiSubscribers[subscriber] = nil end
+    end)
+
+    AddEventHandler("playerDropped", function()
+        local subscriber = tonumber(source)
+        if subscriber then uiSubscribers[subscriber] = nil end
+    end)
+
+    AddEventHandler("esx_whitelist:notifyEntryChanged", function(whitelistId)
+        for subscriber in pairs(uiSubscribers) do
+            if GetPlayerName(subscriber) and allowed(subscriber) then
+                TriggerClientEvent("esx_whitelist:entryChanged", subscriber, whitelistId)
+            else
+                uiSubscribers[subscriber] = nil
+            end
+        end
+    end)
+
     ESX.RegisterServerCallback("esx_whitelist:getConfig", function(source, cb)
         if not allowed(source) then return cb(nil) end
         cb({
@@ -62,7 +110,7 @@ function Callbacks.Register(translations, onStateChanged)
 
     ESX.RegisterServerCallback("esx_whitelist:getWhitelistEntries", function(source, cb, request)
         if not allowed(source) then
-            return cb({ entries = {}, page = 1, limit = 50, total = 0, totalPages = 0 })
+            return cb({ entries = {}, cursor = nil, nextCursor = nil, hasMore = false, limit = 50 })
         end
         Database.Search(type(request) == "table" and request or {}, cb)
     end)
@@ -75,6 +123,7 @@ function Callbacks.Register(translations, onStateChanged)
             return cb(false)
         end
 
+        local previousConfig = State.config
         local ok, err, oldEnabled = ConfigService.Apply(data)
         if not ok then
             TriggerClientEvent("esx:showNotification", source, "~r~" .. (err or Util.Translate(translations, "invalid_configuration")))
@@ -83,9 +132,7 @@ function Callbacks.Register(translations, onStateChanged)
 
         if State.config.enabled ~= oldEnabled then
             onStateChanged(State.config.enabled, true, adminName(source))
-        else
-            -- A configuration change can enable Discord authorization or alter rules.
-            -- Re-check connected players without pretending that only DB entries count.
+        elseif authorizationConfigChanged(previousConfig, State.config) then
             TriggerClientEvent("esx_whitelist:stateChanged", -1, State.config.enabled)
             if State.config.enabled then
                 Connection.KickNonWhitelisted(State.translations)
@@ -194,11 +241,6 @@ function Callbacks.Register(translations, onStateChanged)
         end)
     end)
 
-    ESX.RegisterServerCallback("esx_whitelist:detectIdentifier", function(source, cb, rawValue)
-        if not allowed(source) or type(rawValue) ~= "string" then return cb({ valid = false }) end
-        local full, idType, value = Validation.Identifier(rawValue)
-        cb({ type = idType, value = value, valid = full ~= nil })
-    end)
 end
 
 return Callbacks

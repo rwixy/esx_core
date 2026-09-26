@@ -154,8 +154,6 @@ local function translate(translations, key, ...)
     return ok and result or template
 end
 
----@description Detects the type of an identifier from a raw string.
-Util.DetectIdentifierType = detectIdentifierType
 ---@description Normalizes a raw identifier string into type and value components.
 Util.NormalizeIdentifier = normalizeIdentifier
 ---@description Gets filtered player identifiers by supported types.

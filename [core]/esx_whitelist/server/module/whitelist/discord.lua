@@ -15,11 +15,138 @@ local NEGATIVE_TTL <const> = 30
 local MAX_ATTEMPTS <const> = 3
 local RETRY_DELAY <const> = 1000
 local TIMEOUT <const> = 15000
+local MAX_CONCURRENT_REQUESTS <const> = math.max(1, math.min(64, math.floor(tonumber(Config.DiscordMaxConcurrentRequests) or 8)))
+local MAX_QUEUED_REQUESTS <const> = math.max(1, math.min(10000, math.floor(tonumber(Config.DiscordMaxQueuedRequests) or 2048)))
+local REQUEST_INTERVAL <const> = math.max(0, math.min(1000, math.floor(tonumber(Config.DiscordRequestIntervalMs) or 25)))
 local cache = {}
 local pending = {}
 local webhookCooldownUntil = 0
+local requestQueue = {}
+local queueHead, queueTail, queuedCount = 1, 0, 0
+local activeRequests = 0
+local globalRetryAt = 0
+local nextRequestAt = 0
+local pumpTimerScheduled = false
+local pump
 
 State.config.discordBotToken = ServerConfig.DiscordBotToken or ""
+
+local function compactQueue()
+    local compacted = {}
+    for index = queueHead, queueTail do
+        local request = requestQueue[index]
+        if request and request.queued and not request.settled then
+            compacted[#compacted + 1] = request
+            request.queueIndex = #compacted
+        end
+    end
+    requestQueue = compacted
+    queueHead = 1
+    queueTail = #compacted
+    queuedCount = queueTail
+end
+
+local function removeQueued(request)
+    if not request.queued then return end
+    requestQueue[request.queueIndex] = nil
+    request.queueIndex = nil
+    request.queued = false
+    queuedCount = math.max(0, queuedCount - 1)
+    if queuedCount == 0 then
+        requestQueue = {}
+        queueHead, queueTail = 1, 0
+    end
+end
+
+local function takeQueued()
+    while queueHead <= queueTail do
+        local request = requestQueue[queueHead]
+        requestQueue[queueHead] = nil
+        queueHead = queueHead + 1
+        if request then
+            request.queueIndex = nil
+            request.queued = false
+            queuedCount = math.max(0, queuedCount - 1)
+            if not request.settled then
+                if queueHead > queueTail then
+                    requestQueue = {}
+                    queueHead, queueTail = 1, 0
+                end
+                return request
+            end
+        end
+    end
+    requestQueue = {}
+    queueHead, queueTail, queuedCount = 1, 0, 0
+    return nil
+end
+
+local function schedulePump(delay)
+    if pumpTimerScheduled then return end
+    pumpTimerScheduled = true
+    SetTimeout(math.max(0, delay), function()
+        pumpTimerScheduled = false
+        pump()
+    end)
+end
+
+local function enqueue(request)
+    if request.settled or request.queued or request.active then return end
+    if queueTail >= MAX_QUEUED_REQUESTS * 2 then compactQueue() end
+    queueTail = queueTail + 1
+    requestQueue[queueTail] = request
+    request.queueIndex = queueTail
+    request.queued = true
+    queuedCount = queuedCount + 1
+    pump()
+end
+
+pump = function()
+    local delay = globalRetryAt - GetGameTimer()
+    if delay > 0 then
+        schedulePump(delay)
+        return
+    end
+
+    while activeRequests < MAX_CONCURRENT_REQUESTS do
+        local intervalDelay = nextRequestAt - GetGameTimer()
+        if intervalDelay > 0 then
+            schedulePump(intervalDelay)
+            return
+        end
+
+        local request = takeQueued()
+        if not request then return end
+        request.active = true
+        activeRequests = activeRequests + 1
+        nextRequestAt = GetGameTimer() + REQUEST_INTERVAL
+        request.run()
+    end
+end
+
+local function retryDelay(headers, data, attempts)
+    local retryAfter
+    if type(headers) == "table" then
+        for name, value in pairs(headers) do
+            if tostring(name):lower() == "retry-after" then
+                retryAfter = tonumber(value)
+                break
+            end
+        end
+    end
+
+    if not retryAfter and type(data) == "string" then
+        local ok, decoded = pcall(json.decode, data)
+        if ok and type(decoded) == "table" then
+            retryAfter = tonumber(decoded.retry_after)
+        end
+    end
+
+    if retryAfter and retryAfter > 0 then
+        return math.max(100, math.ceil(retryAfter * 1000))
+    end
+    return RETRY_DELAY * attempts
+end
 
 local function configured()
     return State.config.discordEnabled
@@ -46,8 +173,11 @@ function Discord.CheckRole(discordId, callback)
         return callback(false, "invalid_discord_id")
     end
 
+    local guildId = State.config.discordGuildId
+    local roleId = State.config.discordRoleId
+    local botToken = State.config.discordBotToken
     local now = os.time()
-    local cacheKey = ("%s:%s:%s"):format(State.config.discordGuildId, State.config.discordRoleId, discordId)
+    local cacheKey = ("%s:%s:%s"):format(guildId, roleId, discordId)
     local cached = cache[cacheKey]
     if cached and cached.expires > now then
         return callback(cached.hasRole, nil)
@@ -58,12 +188,17 @@ function Discord.CheckRole(discordId, callback)
         return
     end
 
-    local request = { callbacks = { callback }, settled = false }
+    if queuedCount >= MAX_QUEUED_REQUESTS then
+        return callback(false, "discord_queue_full")
+    end
+
+    local request = { callbacks = { callback }, settled = false, attempts = 0 }
     pending[cacheKey] = request
 
     local function finish(hasRole, err)
         if request.settled then return end
         request.settled = true
+        removeQueued(request)
 
         if not err then
             cache[cacheKey] = {
@@ -73,6 +208,7 @@ function Discord.CheckRole(discordId, callback)
         end
 
         pending[cacheKey] = nil
+        pump()
         local callbacks = request.callbacks
         for i = 1, #callbacks do callbacks[i](hasRole, err) end
     end
@@ -81,21 +217,29 @@ function Discord.CheckRole(discordId, callback)
         finish(false, "discord_timeout")
     end)
 
-    local endpoint = ("https://discord.com/api/v10/guilds/%s/members/%s"):format(
-        State.config.discordGuildId,
-        discordId
-    )
+    local endpoint = ("https://discord.com/api/v10/guilds/%s/members/%s"):format(guildId, discordId)
     local headers = {
-        ["Authorization"] = "Bot " .. State.config.discordBotToken,
+        ["Authorization"] = "Bot " .. botToken,
         ["Content-Type"] = "application/json"
     }
-    local attempts = 0
+    request.run = function()
+        if request.settled then
+            request.active = false
+            activeRequests = math.max(0, activeRequests - 1)
+            return pump()
+        end
 
-    local function attempt()
-        if request.settled then return end
-        attempts = attempts + 1
+        request.attempts = request.attempts + 1
         PerformHttpRequest(endpoint, function(statusCode, data, responseHeaders)
-            if request.settled then return end
+            request.active = false
+            activeRequests = math.max(0, activeRequests - 1)
+
+            if statusCode == 429 then
+                local delay = retryDelay(responseHeaders, data, request.attempts)
+                globalRetryAt = math.max(globalRetryAt, GetGameTimer() + delay)
+            end
+
+            if request.settled then return pump() end
 
             if statusCode == 200 and data then
                 local member = data
@@ -108,7 +252,7 @@ function Discord.CheckRole(discordId, callback)
 
                 local hasRole = false
                 for i = 1, #(member.roles or {}) do
-                    if member.roles[i] == State.config.discordRoleId then
+                    if member.roles[i] == roleId then
                         hasRole = true
                         break
                     end
@@ -120,21 +264,25 @@ function Discord.CheckRole(discordId, callback)
                 return finish(false, nil)
             end
 
-            if statusCode == 429 and attempts < MAX_ATTEMPTS then
-                local retryAfter = tonumber(responseHeaders and (responseHeaders["retry-after"] or responseHeaders["Retry-After"]))
-                local delay = retryAfter and math.max(100, math.min(10000, retryAfter * 1000)) or (RETRY_DELAY * attempts)
-                return SetTimeout(delay, attempt)
+            if statusCode == 429 then
+                if request.attempts < MAX_ATTEMPTS then
+                    return enqueue(request)
+                end
+                return finish(false, "discord_api_error:429")
             end
 
-            if (statusCode >= 500 or statusCode == 0) and attempts < MAX_ATTEMPTS then
-                return SetTimeout(RETRY_DELAY * attempts, attempt)
+            if (statusCode >= 500 or statusCode == 0) and request.attempts < MAX_ATTEMPTS then
+                local delay = RETRY_DELAY * request.attempts
+                return SetTimeout(delay, function()
+                    enqueue(request)
+                end)
             end
 
             finish(false, "discord_api_error:" .. tostring(statusCode))
         end, "GET", "", headers)
     end
 
-    attempt()
+    enqueue(request)
 end
 
 ---@description Sends a log message to the Discord webhook with cooldown.
@@ -174,12 +322,6 @@ end
 ---@return number timeoutMs
 function Discord.DeferralTimeout()
     return TIMEOUT
-end
-
----@description Returns whether Discord should fail open on errors.
----@return boolean failOpen
-function Discord.FailOpen()
-    return false
 end
 
 return Discord

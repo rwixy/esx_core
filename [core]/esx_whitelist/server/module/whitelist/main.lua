@@ -17,6 +17,7 @@ local Util <const> = xLib.require "@esx_whitelist.server.module.whitelist.util"
 ---@class Whitelist
 ---@description Main entry point for the ESX whitelist system.
 local Whitelist = {}
+local RECONCILE_CHUNK_SIZE <const> = 50
 
 local function applyStateChanged(enabled, manual, adminName)
     if manual then
@@ -61,11 +62,12 @@ local function reconcileOnline()
                         Cache.GetIdentifiers(source),
                         "system:admin",
                         function(saved, _, whitelistId)
-                            if saved then TriggerClientEvent("esx_whitelist:entryChanged", -1, whitelistId) end
+                            if saved then TriggerEvent("esx_whitelist:notifyEntryChanged", whitelistId) end
                         end
                     )
                 end
             end
+            if i % RECONCILE_CHUNK_SIZE == 0 then Wait(0) end
         end
     end)
 end
@@ -133,6 +135,23 @@ function Whitelist.OnPlayerLoaded(playerId)
     State.onlinePlayerCount = State.onlinePlayerCount + 1
     if Auth.IsAdmin(source) then State.onlineAdminCount = State.onlineAdminCount + 1 end
     Rules.EvaluateAndApply(applyStateChanged)
+end
+
+---@description Caches identifiers once the native player source is stable.
+---@param playerId number The player source ID
+---@param previousPlayerId number? The temporary player source ID
+function Whitelist.OnPlayerJoining(playerId, previousPlayerId)
+    local source = tonumber(playerId)
+    if not source or source <= 0 then return end
+
+    previousPlayerId = tonumber(previousPlayerId)
+    if previousPlayerId and previousPlayerId > 0 and previousPlayerId ~= source then
+        Cache.ClearIdentifiers(previousPlayerId)
+        State.gracePlayers[previousPlayerId] = nil
+        Auth.Clear(previousPlayerId)
+    end
+
+    Cache.SetIdentifiers(source, Util.GetPlayerIdentifiersFiltered(source))
 end
 
 ---@description Handles player dropped event: cleans up identifiers, grace state, and triggers rule evaluation.

@@ -2,4 +2,5 @@
 node_modules/
 
 # tmp config
+whitelist_config.json
 whitelist_config.json.tmp

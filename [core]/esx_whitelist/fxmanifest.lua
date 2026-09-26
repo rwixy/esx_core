@@ -16,8 +16,6 @@ shared_scripts {
 
 server_scripts {
     "@oxmysql/lib/MySQL.lua",
-    "server/config/main.lua",
-    "server/module/whitelist/*.lua",
     "server/main.lua"
 }
 

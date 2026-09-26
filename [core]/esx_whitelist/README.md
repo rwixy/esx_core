@@ -6,14 +6,14 @@ ESX whitelist system with database identifiers, optional Discord role verificati
 
 Connection authorization is always evaluated in this order:
 
-1. **Configured identifier allowlist** → **ALLOW** without a database or Discord check.
-2. **ESX/ACE admin** → add or re-enable their identifier entry in the database, then **ALLOW**.
-3. **Whitelist disabled** → **KICK** for every non-exception player. The master switch remains fail-closed outside configured and administrator exceptions.
+1. **Whitelist disabled** → **ALLOW** normal players without identifier or Discord checks.
+2. **Configured identifier allowlist** → **ALLOW** without a database or Discord check.
+3. **ESX/ACE admin** → **ALLOW** based on the current ESX group or ACE permission.
 4. **Identifier mode** → only an enabled database-whitelist identifier can **ALLOW**.
 5. **Discord mode** → verify the configured Discord guild role, persist the player's identifiers, then **ALLOW**.
-6. No selected-method check passes → **KICK**.
+6. With enforcement enabled, no selected-method check passing → **KICK**.
 
-Choose **Identifier database** or **Discord role** in the panel's Discord Integration card. The methods are intentionally separate: enabling Discord does not turn it into a fallback for database identifiers. Administrators and successful Discord-role authorizations are saved to the identifier whitelist for audit and recovery.
+Choose **Identifier database** or **Discord role** in the panel's Discord Integration card. The methods are intentionally separate: enabling Discord does not turn it into a fallback for database identifiers. Successful Discord-role authorizations are saved to the identifier whitelist for audit and recovery. ESX/ACE admin checks use the live group or ACE permission and do not query the `users` table per authorization.
 
 ## Requirements
 
@@ -125,4 +125,4 @@ If no rule is applicable, the current master state is retained.
 - Discord webhook URLs are stored in the resource configuration only when explicitly configured through the NUI.
 - Identifier conflicts are rejected instead of silently ignored.
 - Database and Discord authorization are performed server-side.
-- The master whitelist switch is fail-closed for non-exception players: configured identifiers and verified administrators can still enter while it is disabled.
+- Disabling the master whitelist allows new normal players to connect without identifier or Discord checks. When enabled, database and Discord failures reject authorization safely.
